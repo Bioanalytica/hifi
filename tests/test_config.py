@@ -9,8 +9,8 @@ from hifi.config import (
 )
 
 
-def test_output_dir_expands_home():
-    assert DEFAULT_OUTPUT_DIR == os.path.expanduser("~/Music")
+def test_output_dir():
+    assert DEFAULT_OUTPUT_DIR == "/mnt/intranet/Music"
 
 
 def test_default_format():

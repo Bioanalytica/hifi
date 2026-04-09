@@ -31,7 +31,7 @@ def test_parse_args_format():
 def test_parse_args_defaults():
     args = parse_args(["http://a.com"])
     assert args.format == "best"
-    assert args.output == os.path.expanduser("~/Music")
+    assert args.output == "/mnt/intranet/Music"
     assert args.no_tag is False
     assert args.retry is False
     assert args.status is False

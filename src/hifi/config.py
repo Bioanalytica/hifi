@@ -1,6 +1,6 @@
 import os
 
-DEFAULT_OUTPUT_DIR = os.path.expanduser("~/Music")
+DEFAULT_OUTPUT_DIR = "/mnt/intranet/Music"
 DEFAULT_FORMAT = "best"
 DB_PATH = os.path.expanduser("~/tools/hifi/hifi.db")
 MUSICBRAINZ_CONFIDENCE_THRESHOLD = 80
