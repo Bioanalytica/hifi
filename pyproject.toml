@@ -1,0 +1,32 @@
+[project]
+name = "hifi"
+version = "0.1.0"
+description = "High-fidelity audio downloader with MusicBrainz tagging"
+readme = "README.md"
+authors = [
+    { name = "Vincent Paul", email = "bioanalytical@pm.me" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "yt-dlp>=2025.0.0",
+    "musicbrainzngs>=0.7",
+    "mutagen>=1.47",
+]
+
+[project.scripts]
+hifi = "hifi.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hifi"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
