@@ -6,3 +6,6 @@ dist/
 build/
 .pytest_cache/
 hifi.db
+.env
+.env.*
+!.env.example

@@ -17,3 +17,13 @@ FILENAME_UNSAFE = str.maketrans({
     "/": "_", "\\": "_", ":": "_", "*": "_",
     "?": "_", '"': "_", "<": "_", ">": "_", "|": "_",
 })
+
+LISTENBRAINZ_LABS_BASE = "https://labs.api.listenbrainz.org"
+LISTENBRAINZ_BASE = "https://api.listenbrainz.org/1"
+LISTENBRAINZ_DEFAULT_ALGORITHM = (
+    "session_based_days_7500_session_300_contribution_5"
+    "_threshold_15_limit_50_skip_30"
+)
+SEED_SAMPLE_DEFAULT = 10
+RECOMMEND_LIMIT_DEFAULT = 30
+AUDIO_EXTENSIONS = (".opus", ".flac", ".m4a", ".mp3", ".ogg")

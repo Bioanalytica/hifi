@@ -10,8 +10,13 @@ requires-python = ">=3.12"
 dependencies = [
     "yt-dlp>=2025.0.0",
     "musicbrainzngs>=0.7",
-    "mutagen>=1.47",
+    "mutagen>=1.46",
+    "rapidfuzz>=3.0",
 ]
+
+[project.optional-dependencies]
+llm = ["anthropic>=0.40"]
+troi = ["troi>=2025.0"]
 
 [project.scripts]
 hifi = "hifi.cli:main"

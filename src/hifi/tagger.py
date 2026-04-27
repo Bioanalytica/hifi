@@ -26,7 +26,7 @@ def _rate_limit():
     _last_mb_call = time.time()
 
 
-def search_musicbrainz(artist: str, title: str) -> dict[str, str] | None:
+def search_musicbrainz(artist: str, title: str) -> dict[str, Any] | None:
     _rate_limit()
     try:
         results = mb.search_recordings(artist=artist, recording=title, limit=5)
@@ -50,6 +50,9 @@ def search_musicbrainz(artist: str, title: str) -> dict[str, str] | None:
     year = releases[0].get("date", "")[:4] if releases else None
     release_id = releases[0]["id"] if releases else None
 
+    length_ms = best.get("length")
+    duration_sec = int(length_ms) // 1000 if length_ms else None
+
     return {
         "recording_id": best["id"],
         "artist": mb_artist,
@@ -57,6 +60,7 @@ def search_musicbrainz(artist: str, title: str) -> dict[str, str] | None:
         "album": album,
         "year": year,
         "release_id": release_id,
+        "duration": duration_sec,
     }
 
 

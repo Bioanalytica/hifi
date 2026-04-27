@@ -98,6 +98,30 @@ class Database:
         )
         self.conn.commit()
 
+    def get_all_mbids(self) -> set[str]:
+        cursor = self.conn.execute(
+            "SELECT musicbrainz_id FROM downloads "
+            "WHERE musicbrainz_id IS NOT NULL AND status = 'complete'"
+        )
+        return {row["musicbrainz_id"] for row in cursor}
+
+    def get_by_mbid(self, mbid: str) -> sqlite3.Row | None:
+        cursor = self.conn.execute(
+            "SELECT * FROM downloads WHERE musicbrainz_id = ? AND status = 'complete' "
+            "LIMIT 1",
+            (mbid,),
+        )
+        return cursor.fetchone()
+
+    def get_by_artist_title(self, artist: str, title: str) -> sqlite3.Row | None:
+        cursor = self.conn.execute(
+            "SELECT * FROM downloads "
+            "WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?) "
+            "AND status = 'complete' LIMIT 1",
+            (artist, title),
+        )
+        return cursor.fetchone()
+
     def get_stats(self) -> dict[str, int]:
         cursor = self.conn.execute(
             """SELECT status, COUNT(*) as cnt FROM downloads GROUP BY status"""
