@@ -47,6 +47,8 @@ The ranker scores each YouTube candidate on uploader (`Artist - Topic`, label ch
 
 `--dry-run` prints the candidate table without downloading.
 
+The MusicBrainz tagger only accepts a hit when its score is ≥ `MUSICBRAINZ_CONFIDENCE_THRESHOLD` (default 95) AND the candidate's `Artist Title` is a close fuzzy match for the user's query (token-set ratio ≥ 75, plus a stricter ≥ 90 ratio on the primary artist alone after `feat.` clauses are stripped). When MB doesn't return a confident match, the user's original `Artist - Title` query is used verbatim for tagging and filename so a wrong MB hit can't override your intent.
+
 ### Recommendations
 
 ```sh
@@ -73,25 +75,71 @@ hifi recommend --seed-dir /mnt/intranet/Music --download 10
 #### How recommend works
 
 1. Each seed is resolved to a MusicBrainz Recording MBID (DB cache → `tagger.search_musicbrainz`).
-2. MBIDs are canonicalized via the LB Labs `recording-mbid-lookup` endpoint (similar-recordings only matches canonical IDs).
+2. MBIDs are canonicalized via LB Labs `recording-mbid-lookup` (similar-recordings matches best on canonical IDs). The lookup also supplies seed artist MBIDs for the genre filter below.
 3. `similar-recordings/json` is queried with the canonical MBIDs and a session-based collaborative-filter algorithm.
-4. Hits are aggregated across seeds (a track that's similar to multiple seeds gets a consensus boost), filtered to drop the seeds themselves and anything already in your local hifi library, and ranked by score.
-5. The top N are printed as a table, optionally written to `.m3u`/`.jspf`, and optionally fed back into the search-and-download pipeline.
+4. Hits are aggregated across seeds (a track that's similar to multiple seeds gets a consensus boost), filtered to drop the seeds themselves and anything already in your local hifi library.
+5. **Genre post-filter**: an allowlist is built from your seeds' MusicBrainz artist tags (any tag that recurs across two seeds, plus the top 10 by frequency). Picks whose artists carry no overlapping tag are dropped. Picks with no known tags are kept by default (lenient); pass `--strict-genre` to drop those instead. Override the auto-derived allowlist with explicit `--genre TAG` flags, or disable the filter with `--no-genre-filter`. When a pick's LB Labs metadata is missing artist info, we fall back to a direct MusicBrainz recording lookup so legitimate picks aren't dropped due to a transient API outage.
+6. **Anti-genre filter** (always on by default): a built-in denylist hard-rejects picks tagged with explicit non-EDM genres (`pop`, `dance-pop`, `hip hop`, `rap`, `country`, `rock`, `christmas`, etc.) even when they ALSO carry a matching allowlist tag. Without this, EDM-crossover artists like Major Lazer / Calvin Harris / Lil Nas X (tagged both `edm` and `pop`/`hip hop`) leak through on the `edm` match. Extend with `--exclude-genre TAG` (repeatable). When the denylist is active, picks with no known tags are also dropped — when the user is explicit about exclusions we don't trust unknowns.
+7. **Owned-dir dedup** (optional): pass `--owned-dir PATH` (repeatable) to scan music directories you already have on disk; picks already present (matched by MBID first, then by lowercased `Artist|Title`) are dropped. Tag reads use a thread pool, and results are cached at `~/.cache/hifi/owned.json` keyed by `(path, mtime)`, so cold scans of ~12k files take ~60s and warm runs are sub-second.
+8. The top N are printed as a table, optionally written to `.m3u`/`.jspf`, and optionally fed back into the search-and-download pipeline.
+
+Without the genre filter, LB's session-based collaborative filter leaks into mainstream tracks that share listening sessions with EDM (Jonas Blue, MØ, Clean Bandit, etc.) — useful as a discovery tool for some users, but usually wrong if your library is genre-focused.
 
 #### Coverage caveats
 
-ListenBrainz's collaborative filter has thin coverage for niche EDM/electronic tracks — single-seed runs on those may return empty. Multi-seed runs (or `--seed-dir` sampling) tend to work fine because any one well-listened seed in the batch carries the result.
+ListenBrainz's collaborative filter has thin coverage for niche EDM/electronic tracks — single-seed runs on those may return empty. Multi-seed runs (or `--seed-dir` sampling) tend to work fine because any one well-listened seed in the batch carries the result. The LB Labs `recording-mbid-lookup` endpoint currently 500s on certain MBIDs; hifi falls back to per-MBID retries and ultimately to raw (non-canonical) MBIDs so the pipeline doesn't stall.
 
 #### LB-Radio prompt mode (optional)
 
-With `hifi[troi]` installed:
+With `hifi[troi]` installed (`uv sync --extra troi`):
 
 ```sh
+# Hand-written prompt
 hifi recommend --lb-radio "artist:Oceanlab tag:trance" --limit 30
-hifi recommend --lb-radio "artist:Coldplay" --lb-radio-mode hard
+hifi recommend --lb-radio "tag:dubstep tag:melodic-dubstep" --lb-radio-mode hard
+
+# Or auto-derive the prompt from your seeds' artist tags
+hifi recommend --seed-file ~/playlist.m3u --lb-radio-from-seeds --limit 30
 ```
 
-See the [Troi LB-Radio docs](https://troi.readthedocs.io/en/latest/lb_radio.html) for the full prompt syntax.
+`--lb-radio-from-seeds` runs the same seed-resolution + tag-derivation logic the genre filter uses, then formats the most-frequent *specific* subgenre tags (umbrella tags like `electronic`, `pop`, regional/decade tags are stripped) as `tag:X tag:Y …` and hands the prompt to Troi. The genre post-filter is applied to Troi's output too — Troi gives a broader candidate pool than `similar-recordings`, the post-filter narrows it back to the seed-derived genre family. See the [Troi LB-Radio docs](https://troi.readthedocs.io/en/latest/lb_radio.html) for the full prompt syntax.
+
+Option 1 (`recommend` without `--lb-radio*`) and option 2 (`--lb-radio-from-seeds`) lean different ways: option 1 follows the collaborative-filter signal closely (more of your exact neighbours — for an EDM seed set, expect lots of melodic dubstep / Illenium-adjacent tracks), option 2 follows the tag signal (broader electronic neighbourhood — trip-hop, breakbeat, downtempo). Run both and compare.
+
+#### Worked example: from a Poweramp playlist to 30 new EDM tracks
+
+`read_seed_file` parses Poweramp m3u8 exports — bare file-path lines like `4DCA-B7D3/Music/Electronica/Artist - Title - Album.flac` are read by extracting `Artist - Title` from the basename. Combined with library dedup, the round-trip looks like this:
+
+```sh
+# 1. Preview: scan the existing library, sample 20 seeds, print a 30-pick table.
+#    --dry-run skips the download and writes a playlist file you can eyeball.
+hifi recommend \
+  --seed-file /mnt/intranet/Music/Electr0.m3u8 \
+  --seed-sample 20 \
+  --owned-dir /mnt/c/Users/bioan/Music \
+  --owned-dir /mnt/intranet/Music \
+  --limit 30 \
+  --out /tmp/recs.m3u \
+  --dry-run
+
+# 2. If the table looks good, take the *exact* picks from the dry-run and
+#    download them deterministically (random.sample is non-deterministic, so
+#    re-running step 1 with --download 30 might pick a different 30).
+queries=()
+while IFS= read -r line; do
+  [[ $line == "# search:"* ]] && queries+=(--search "${line#\# search:}")
+done < /tmp/recs.m3u
+hifi "${queries[@]}" --output /mnt/intranet/Music/Recommended
+
+# (Or, if you don't care about reproducibility, just re-run with --download.)
+hifi recommend \
+  --seed-file /mnt/intranet/Music/Electr0.m3u8 \
+  --seed-sample 20 \
+  --owned-dir /mnt/c/Users/bioan/Music \
+  --owned-dir /mnt/intranet/Music \
+  --limit 30 --download 30 \
+  --output /mnt/intranet/Music/Recommended
+```
 
 ## Other commands
 
@@ -107,7 +155,9 @@ Defaults live in `src/hifi/config.py`:
 
 - `DEFAULT_OUTPUT_DIR = "/mnt/intranet/Music"` (override per-call with `--output`)
 - `DB_PATH = ~/tools/hifi/hifi.db`
-- `MUSICBRAINZ_CONFIDENCE_THRESHOLD = 80`
+- `MUSICBRAINZ_CONFIDENCE_THRESHOLD = 95` (MB ext:score below this, MB hit is dropped)
+- `MUSICBRAINZ_QUERY_SIMILARITY = 75` (token-set ratio between MB hit and user query — combined with a stricter ≥ 90 ratio on the primary artist alone)
+- `SEED_SAMPLE_DEFAULT = 10` and `RECOMMEND_LIMIT_DEFAULT = 30`
 
 ### Environment variables
 
@@ -128,8 +178,9 @@ Each download is logged in `hifi.db` with cleaned URL, format, status, MBID, and
 ## Development
 
 ```sh
-uv run pytest               # 79 tests
+uv run pytest               # 89 tests
 uv run pytest -x -k searcher
+uv run pytest -x -k genre   # genre filter unit tests
 ```
 
 Code layout:

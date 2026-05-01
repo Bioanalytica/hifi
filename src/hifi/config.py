@@ -3,7 +3,11 @@ import os
 DEFAULT_OUTPUT_DIR = "/mnt/intranet/Music"
 DEFAULT_FORMAT = "best"
 DB_PATH = os.path.expanduser("~/tools/hifi/hifi.db")
-MUSICBRAINZ_CONFIDENCE_THRESHOLD = 80
+MUSICBRAINZ_CONFIDENCE_THRESHOLD = 95
+# Min token-set similarity (rapidfuzz, 0-100) between the search query
+# "Artist Title" and MB's top result. Below this we treat MB as a miss
+# and fall back to the original query for tagging.
+MUSICBRAINZ_QUERY_SIMILARITY = 75
 COVER_ART_SIZE = 500
 PREFERRED_CODECS = ("opus", "flac", "vorbis")
 

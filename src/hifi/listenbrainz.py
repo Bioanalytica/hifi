@@ -122,26 +122,43 @@ def recording_lookup(mbids: list[str]) -> dict[str, dict]:
         mbid = item.get("original_recording_mbid") or item.get("recording_mbid")
         if not mbid:
             continue
+        artist_mbids = item.get("artist_credit_mbids") or []
+        if not artist_mbids:
+            for a in item.get("artists") or []:
+                am = a.get("artist_mbid")
+                if am:
+                    artist_mbids.append(am)
         out[mbid] = {
             "artist_credit_name": item.get("artist_credit_name"),
             "recording_name": item.get("recording_name"),
             "release_name": item.get("release_name"),
             "length": item.get("length"),
             "canonical_recording_mbid": item.get("canonical_recording_mbid"),
+            "artist_mbids": list(artist_mbids),
         }
     return out
 
 
-def canonicalize_mbids(mbids: list[str]) -> dict[str, str]:
-    """Map input MBIDs -> their canonical recording MBIDs.
+def lookup_with_retry(mbids: list[str]) -> dict[str, dict]:
+    """Resolve MBIDs to metadata via recording-mbid-lookup, with fallback.
 
-    The similar-recordings endpoint only matches on canonical MBIDs;
-    musicbrainzngs may return a non-canonical alias. MBIDs without a
-    canonical mapping are dropped from the result.
+    The Labs lookup endpoint currently 500s on certain inputs when batched.
+    Try the batch first; for any MBIDs missing from the response, retry
+    one at a time so a single bad MBID doesn't sink the whole query.
     """
-    meta = recording_lookup(mbids)
+    out = recording_lookup(mbids)
+    missing = [m for m in mbids if m not in out]
+    for m in missing:
+        single = recording_lookup([m])
+        if m in single:
+            out[m] = single[m]
+    return out
+
+
+def canonicalize_mbids(mbids: list[str]) -> dict[str, str]:
+    """Map input MBIDs -> their canonical recording MBIDs."""
     out: dict[str, str] = {}
-    for input_mbid, info in meta.items():
+    for input_mbid, info in lookup_with_retry(mbids).items():
         canon = info.get("canonical_recording_mbid")
         if canon:
             out[input_mbid] = canon

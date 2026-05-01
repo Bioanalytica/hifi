@@ -157,8 +157,18 @@ def resolve_search_query(query: str, dry_run: bool) -> str | None:
 
 def process_url(url: str, db: Database, output_dir: str,
                 preferred_format: str, skip_tag: bool,
-                dry_run: bool) -> str:
+                dry_run: bool,
+                query_artist: str | None = None,
+                query_title: str | None = None) -> str:
     """Process a single URL through the pipeline.
+
+    When ``query_artist`` / ``query_title`` are supplied (search-mode
+    downloads), they're treated as the user's source-of-truth intent:
+    MB is queried with them (not yt-dlp's parsed video metadata, which
+    is often broken on remixes / feat. credits), and if MB doesn't
+    return a high-confidence + similar-enough match the file is tagged
+    with the original query verbatim.
+
     Returns: 'downloaded', 'skipped', or 'failed'."""
 
     original_url = url
@@ -188,8 +198,8 @@ def process_url(url: str, db: Database, output_dir: str,
             progress_hook=_progress_hook,
         )
 
-        artist = meta.get("artist", "Unknown")
-        title = meta.get("title", "Unknown")
+        artist = query_artist or meta.get("artist", "Unknown")
+        title = query_title or meta.get("title", "Unknown")
         ext = meta.get("ext", "opus")
 
         if not skip_tag:
@@ -272,17 +282,22 @@ def run_pipeline(args: argparse.Namespace):
 
         for i, (kind, item) in enumerate(raw_items, 1):
             print(f"\n[{i}/{len(raw_items)}] {item}")
+            q_artist: str | None = None
+            q_title: str | None = None
             if kind == "query":
                 url = resolve_search_query(item, args.dry_run)
                 if url is None:
                     skipped += 1
                     continue
+                q_artist, q_title = _parse_search_query(item)
             else:
                 url = item
 
             result = process_url(
                 url, db, args.output, args.format,
                 args.no_tag, args.dry_run,
+                query_artist=q_artist,
+                query_title=q_title,
             )
             if result == "downloaded":
                 downloaded += 1
@@ -317,9 +332,36 @@ def parse_recommend_args(argv: list[str]) -> argparse.Namespace:
         help="Use Troi LB-Radio prompt syntax (requires hifi[troi])",
     )
     parser.add_argument(
+        "--lb-radio-from-seeds", action="store_true",
+        help="Derive an LB-Radio prompt from seed artist tags (requires hifi[troi])",
+    )
+    parser.add_argument(
         "--lb-radio-mode", default="medium",
         choices=["easy", "medium", "hard"],
         help="LB-Radio relevance tier (default: medium)",
+    )
+    parser.add_argument(
+        "--genre", action="append", default=[], metavar="TAG",
+        help="Restrict picks to this MB tag (repeatable). Overrides auto-derivation.",
+    )
+    parser.add_argument(
+        "--no-genre-filter", action="store_true",
+        help="Disable the seed-derived genre post-filter",
+    )
+    parser.add_argument(
+        "--strict-genre", action="store_true",
+        help="Drop picks with no known tags (default: keep them)",
+    )
+    parser.add_argument(
+        "--exclude-genre", action="append", default=[], metavar="TAG",
+        help="Hard-reject picks tagged with TAG even if they match the "
+             "allowlist (repeatable). Adds to the built-in defaults: "
+             "pop, country, classical, jazz, blues, christmas, etc.",
+    )
+    parser.add_argument(
+        "--owned-dir", action="append", default=[], metavar="PATH",
+        help="Music directory to dedup against (repeatable). Picks already "
+             "present (by MBID or by Artist|Title) are dropped.",
     )
     parser.add_argument(
         "--limit", type=int, default=RECOMMEND_LIMIT_DEFAULT,
@@ -354,6 +396,7 @@ def _print_picks(picks):
 
 
 def _gather_seeds(args: argparse.Namespace):
+    import random
     from hifi.library import Seed, read_seed_file, scan
     seeds: list[Seed] = []
     for s in args.seed:
@@ -364,21 +407,60 @@ def _gather_seeds(args: argparse.Namespace):
         artist, title = s.split(" - ", 1)
         seeds.append(Seed(artist=artist.strip(), title=title.strip()))
     if args.seed_file:
-        seeds.extend(read_seed_file(args.seed_file))
+        file_seeds = read_seed_file(args.seed_file)
+        if args.seed_sample and args.seed_sample < len(file_seeds):
+            file_seeds = random.sample(file_seeds, args.seed_sample)
+        seeds.extend(file_seeds)
     if args.seed_dir:
         seeds.extend(scan(args.seed_dir, sample=args.seed_sample))
     return seeds
 
 
 def run_recommend(args: argparse.Namespace):
+    from hifi.library import collect_owned
     from hifi.playlist import PlaylistEntry, write
-    from hifi.recommender import recommend, troi_lb_radio
+    from hifi.recommender import (
+        _DEFAULT_EXCLUDE_GENRES,
+        filter_picks_by_owned, lb_radio_from_seeds, recommend, troi_lb_radio,
+    )
 
     db = Database()
     try:
-        if args.lb_radio:
+        owned_mbids: set[str] = set()
+        owned_titles: set[str] = set()
+        if args.owned_dir:
+            print(f"  scanning owned dir(s): {', '.join(args.owned_dir)}")
+            owned_mbids, owned_titles = collect_owned(args.owned_dir)
+            print(f"  owned: {len(owned_mbids)} MBIDs, {len(owned_titles)} titles")
+
+        exclude_genres = set(_DEFAULT_EXCLUDE_GENRES)
+        for g in args.exclude_genre:
+            exclude_genres.add(g.strip().lower())
+
+        if args.lb_radio_from_seeds:
+            seeds = _gather_seeds(args)
+            if not seeds:
+                print("  no seeds provided. Use --seed, --seed-dir, or --seed-file.")
+                return
+            print(f"  seeds: {len(seeds)} (deriving LB-Radio prompt from artist tags)")
+            prompt, picks = lb_radio_from_seeds(
+                seeds, db,
+                mode=args.lb_radio_mode, limit=args.limit,
+                filter_genre=not args.no_genre_filter,
+                strict_genre=args.strict_genre,
+                exclude_genres=exclude_genres,
+                owned_mbids=owned_mbids,
+                owned_titles=owned_titles,
+            )
+            if not prompt:
+                print("  could not derive any tags from seed artists")
+                return
+            print(f"  troi LB-Radio: {prompt!r} (mode={args.lb_radio_mode})")
+        elif args.lb_radio:
             print(f"  troi LB-Radio: {args.lb_radio!r} (mode={args.lb_radio_mode})")
             picks = troi_lb_radio(args.lb_radio, args.lb_radio_mode, limit=args.limit)
+            if owned_mbids or owned_titles:
+                picks = filter_picks_by_owned(picks, owned_mbids, owned_titles)
         else:
             seeds = _gather_seeds(args)
             if not seeds:
@@ -390,7 +472,15 @@ def run_recommend(args: argparse.Namespace):
                 print(f"    {s.artist} - {s.title}{marker}")
             if len(seeds) > 5:
                 print(f"    ... and {len(seeds) - 5} more")
-            picks = recommend(seeds, db, limit=args.limit)
+            picks = recommend(
+                seeds, db, limit=args.limit,
+                genres=set(args.genre) if args.genre else None,
+                filter_genre=not args.no_genre_filter,
+                strict_genre=args.strict_genre,
+                exclude_genres=exclude_genres,
+                owned_mbids=owned_mbids or None,
+                owned_titles=owned_titles or None,
+            )
 
         if not picks:
             print("  no recommendations found")
@@ -421,6 +511,8 @@ def run_recommend(args: argparse.Namespace):
                 process_url(
                     url, db, args.output, args.format,
                     args.no_tag, dry_run=False,
+                    query_artist=p.artist,
+                    query_title=p.title,
                 )
     finally:
         db.close()

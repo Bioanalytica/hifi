@@ -1,4 +1,5 @@
 import base64
+import re
 import time
 import urllib.request
 import urllib.error
@@ -11,11 +12,28 @@ from mutagen.oggopus import OggOpus
 from mutagen.oggvorbis import OggVorbis
 from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, APIC
 
-from hifi.config import MUSICBRAINZ_CONFIDENCE_THRESHOLD, COVER_ART_SIZE
+from rapidfuzz import fuzz
+
+from hifi.config import (
+    COVER_ART_SIZE,
+    MUSICBRAINZ_CONFIDENCE_THRESHOLD,
+    MUSICBRAINZ_QUERY_SIMILARITY,
+)
 
 mb.set_useragent("hifi", "0.1.0", "https://github.com/Bioanalytica/hifi")
 
 _last_mb_call = 0.0
+_FEAT_RE = re.compile(r"\s+(feat\.?|ft\.?|featuring)\s+.*$", re.IGNORECASE)
+
+
+def _primary_artist(s: str) -> str:
+    """Strip ``feat. X`` / ``ft. X`` / ``featuring X`` clauses.
+
+    MB often credits collab tracks to just the primary artist while the
+    user's query carries the full feature credit, and vice versa. We
+    compare without the feat clause to avoid false-rejecting legit hits.
+    """
+    return _FEAT_RE.sub("", s).strip()
 
 
 def _rate_limit():
@@ -44,6 +62,27 @@ def search_musicbrainz(artist: str, title: str) -> dict[str, Any] | None:
 
     artist_credit = best.get("artist-credit", [])
     mb_artist = artist_credit[0]["artist"]["name"] if artist_credit else artist
+
+    # Reject MB hits that don't actually look like the query. Without this,
+    # a high-score MB recording with a confusable title overrides the
+    # user's intent. e.g. searching "Tritonal - Still With Me (Seven Lions
+    # remix)" was matching "Seven Lions - Breaking Me" because MB's top
+    # hit picked up on the Seven Lions term. We check the combined string
+    # (token-set, lenient about word order / extras) AND the artist alone
+    # (raw ratio, strict — "Muzzy" vs "MUZZ" passes token-set but fails
+    # this).
+    sim = fuzz.token_set_ratio(
+        f"{mb_artist} {best.get('title', '')}".lower(),
+        f"{artist} {title}".lower(),
+    )
+    if sim < MUSICBRAINZ_QUERY_SIMILARITY:
+        return None
+    artist_sim = fuzz.ratio(
+        _primary_artist(mb_artist).lower(),
+        _primary_artist(artist).lower(),
+    )
+    if artist_sim < 90:
+        return None
 
     releases = best.get("release-list", [])
     album = releases[0]["title"] if releases else None
