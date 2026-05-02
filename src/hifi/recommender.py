@@ -41,10 +41,14 @@ _DEFAULT_EXCLUDE_GENRES = frozenset({
     "art pop", "pop rock", "pop-rock",
     "k-pop", "j-pop", "kpop", "jpop", "k pop", "j pop",
     # Rap / hip-hop family (still lets "trap edm" / "future bass" through
-    # because those specific tags don't appear here — "trap" alone is
+    # because those specific tags don't appear here, "trap" alone is
     # ambiguous so we deliberately leave it off)
     "hip hop", "hip-hop", "hiphop", "rap", "pop rap", "boom bap",
     "conscious hip hop", "trap rap", "trap metal", "horrorcore",
+    "alternative hip hop", "alternative-hip-hop",
+    "contemporary rap", "contemporary-rap",
+    "underground hip hop", "underground-hip-hop",
+    "southern hip hop", "southern-hip-hop",
     # Rock / metal / punk (rare overlap with EDM seeds)
     "rock", "punk", "punk rock", "metal", "alternative rock",
     "alternative", "indie rock", "indie",
@@ -357,30 +361,79 @@ def recommend(seeds: list[Seed], db: Database,
     return picks[:limit]
 
 
+def _tag_to_clause(tag: str) -> str:
+    """Format a single MB tag as a Troi LB-Radio ``tag:X`` clause.
+
+    Troi's prompt grammar splits on whitespace, so multi-word tags like
+    ``"future bass"`` are hyphenated to ``tag:future-bass``.
+    """
+    return "tag:" + tag.strip().lower().replace(" ", "-")
+
+
+def _is_lb_radio_denied(tag: str) -> bool:
+    """Check ``tag`` against the LB-Radio prompt denylist.
+
+    The denylist mixes hyphen and space spellings; we accept either by
+    swapping separators before lookup so a single denylist entry covers
+    both forms.
+    """
+    norm = tag.strip().lower()
+    if norm in _LB_RADIO_TAG_DENYLIST:
+        return True
+    if " " in norm and norm.replace(" ", "-") in _LB_RADIO_TAG_DENYLIST:
+        return True
+    if "-" in norm and norm.replace("-", " ") in _LB_RADIO_TAG_DENYLIST:
+        return True
+    return False
+
+
 def _format_lb_radio_prompt(raw_mbids: list[str], meta: dict[str, dict],
-                            max_tags: int = 3) -> str:
+                            max_tags: int = 4) -> str:
     """Format a Troi LB-Radio prompt from the seeds' specific genre tags.
 
     LB-Radio treats each ``tag:X`` clause as an OR filter, so umbrella
     tags like "electronic" or "pop" pull in everything tagged that way.
     We emit only the most-frequent *specific* subgenres from the seeds,
     dropping anything in the broad / off-genre / regional denylist.
-    Multi-word tags are skipped because Troi's prompt grammar treats
-    whitespace as a clause separator.
+    Multi-word tags are kept and hyphenated.
     """
     counter: Counter[str] = Counter()
     for m in raw_mbids:
         counter.update(_tags_for_recording(m, meta))
     parts: list[str] = []
     for tag, _ in counter.most_common():
-        if " " in tag:
+        if _is_lb_radio_denied(tag):
             continue
-        if tag in _LB_RADIO_TAG_DENYLIST:
-            continue
-        parts.append(f"tag:{tag}")
+        parts.append(_tag_to_clause(tag))
         if len(parts) >= max_tags:
             break
     return " ".join(parts)
+
+
+def _format_lb_radio_prompt_from_tags(tags: list[str],
+                                      max_tags: int = 8) -> str:
+    """Format a Troi LB-Radio prompt from an ordered tag list.
+
+    Used by genre-only mode (``--seed-genre``). The input is expected
+    to be ordered by relevance (e.g. LB co-occurrence count, leading
+    with the user's seed genre). We dedupe hyphen/space variants, drop
+    umbrella / regional / decade / artist-name tags via the existing
+    LB-Radio denylist, and emit the rest as ``tag:X`` clauses with
+    multi-word tags hyphenated for Troi's whitespace-split grammar.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for tag in tags:
+        spaced = tag.strip().lower().replace("-", " ")
+        if not spaced or spaced in seen:
+            continue
+        seen.add(spaced)
+        if _is_lb_radio_denied(spaced):
+            continue
+        out.append(spaced)
+        if len(out) >= max_tags:
+            break
+    return " ".join(_tag_to_clause(c) for c in out)
 
 
 def lb_radio_from_seeds(seeds: list[Seed], db: Database,
@@ -428,6 +481,62 @@ def lb_radio_from_seeds(seeds: list[Seed], db: Database,
         pick_meta = lookup_with_retry([p.mbid for p in picks])
         before = len(picks)
         picks = filter_picks_by_genre(picks, allowlist, pick_meta,
+                                      strict=strict_genre,
+                                      exclude=exclude_genres,
+                                      limit=limit)
+        log.info("LB-Radio genre filter: kept %d of %d picks",
+                 len(picks), before)
+
+    return prompt, picks[:limit]
+
+
+def lb_radio_from_genres(canonical_tags: list[str],
+                         allowlist_variants: set[str],
+                         db: Database,
+                         mode: str = "medium", limit: int = 30,
+                         max_prompt_tags: int = 8,
+                         strict_genre: bool = False,
+                         exclude_genres: set[str] | None = None,
+                         owned_mbids: set[str] | None = None,
+                         owned_titles: set[str] | None = None,
+                         ) -> tuple[str, list[Pick]]:
+    """Run Troi LB-Radio with a prompt built from a precomputed tag list.
+
+    Used by ``--seed-genre`` (genre-only mode):
+
+    - ``canonical_tags`` is the relevance-ordered list (most-relevant
+      first) used to form the Troi prompt — the user's seed genre at
+      index 0, then LB co-occurrence neighbors. Order matters here so
+      the prompt's leading clauses are the most-relevant tags.
+    - ``allowlist_variants`` is the variant-inclusive set used to
+      post-filter Troi's output, catching picks tagged either with
+      spaces or hyphens.
+
+    Returns ``(prompt, picks)``.
+    """
+    prompt = _format_lb_radio_prompt_from_tags(
+        canonical_tags, max_tags=max_prompt_tags)
+    if not prompt:
+        return "", []
+
+    over_fetch = max(limit * 3, 50)
+    picks = troi_lb_radio(prompt, mode, limit=over_fetch)
+    if not picks:
+        return prompt, []
+
+    db_mbids = db.get_all_mbids()
+    combined_owned = (owned_mbids or set()) | db_mbids
+    if combined_owned or owned_titles:
+        before = len(picks)
+        picks = filter_picks_by_owned(picks, combined_owned,
+                                      owned_titles or set())
+        log.info("LB-Radio owned filter: kept %d of %d picks",
+                 len(picks), before)
+
+    if (allowlist_variants or exclude_genres is not None) and picks:
+        pick_meta = lookup_with_retry([p.mbid for p in picks])
+        before = len(picks)
+        picks = filter_picks_by_genre(picks, allowlist_variants, pick_meta,
                                       strict=strict_genre,
                                       exclude=exclude_genres,
                                       limit=limit)

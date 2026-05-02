@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
@@ -50,6 +51,23 @@ def _post_json(url: str, body: Any) -> Any:
         headers["Authorization"] = f"Token {tok}"
 
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        log.warning("LB %s -> HTTP %s: %s", url, e.code, e.reason)
+        return None
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        log.warning("LB %s -> %s", url, e)
+        return None
+
+
+def _get_json(url: str) -> Any:
+    headers = {"User-Agent": _USER_AGENT}
+    tok = _token()
+    if tok:
+        headers["Authorization"] = f"Token {tok}"
+    req = urllib.request.Request(url, headers=headers, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -152,6 +170,58 @@ def lookup_with_retry(mbids: list[str]) -> dict[str, dict]:
         single = recording_lookup([m])
         if m in single:
             out[m] = single[m]
+    return out
+
+
+def tag_similarity(tags: list[str]) -> dict[str, list[dict]]:
+    """Fetch co-occurrence-similar tags from LB Labs.
+
+    POSTs ``[{"tag": t}, ...]`` to ``/tag-similarity/json``. The Labs
+    endpoint returns a flat list of ``{similar_tag, count}`` entries
+    *per query tag* — when a single tag is queried the response shape is
+    a flat list, not a nested dict, so per-tag GET fallbacks are how we
+    disambiguate which result belongs to which input.
+
+    On batch failure (POST 5xx, empty response) we fall back to a GET
+    per tag so a single bad tag doesn't sink the whole query.
+
+    Returns ``{input_tag_lowercased: [{"similar_tag": str, "count": int},
+    ...]}``. Missing tags simply absent.
+    """
+    if not tags:
+        return {}
+    norm = [t.strip().lower() for t in tags if t.strip()]
+    if not norm:
+        return {}
+    url = f"{LISTENBRAINZ_LABS_BASE}/tag-similarity/json"
+
+    out: dict[str, list[dict]] = {}
+    if len(norm) > 1:
+        body = [{"tag": t} for t in norm]
+        raw = _post_json(url, body)
+        # The Labs endpoint returns one flat list whose entries don't
+        # carry the originating query tag, so a multi-tag batch can't be
+        # unambiguously demuxed. Treat any batch hit as a hint and still
+        # fall through to the per-tag GETs below; they're cheap enough
+        # at 1-2 calls per recommend invocation.
+        if not raw:
+            log.debug("tag-similarity batch returned empty; per-tag fallback")
+
+    for t in norm:
+        single = _get_json(f"{url}?tag={urllib.parse.quote_plus(t)}")
+        if not isinstance(single, list):
+            continue
+        clean: list[dict] = []
+        for item in single:
+            if not isinstance(item, dict):
+                continue
+            sim = item.get("similar_tag")
+            cnt = item.get("count")
+            if not sim or cnt is None:
+                continue
+            clean.append({"similar_tag": str(sim).strip().lower(),
+                          "count": int(cnt)})
+        out[t] = clean
     return out
 
 

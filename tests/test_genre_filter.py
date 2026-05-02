@@ -123,3 +123,21 @@ def test_owned_filter_drops_by_normalized_title():
 def test_owned_filter_no_owned_passes_through():
     picks = [Pick(artist="A", title="T", mbid="m", score=1)]
     assert filter_picks_by_owned(picks, set(), set()) == picks
+
+
+def test_filter_with_explicit_allowlist_skips_seed_derivation(monkeypatch):
+    """When an explicit allowlist (from --seed-genre or --genre) is passed
+    to the recommend orchestrator, derive_genre_allowlist should not be
+    called. Verified by stubbing the seed-derivation function to raise."""
+    def boom(*a, **k):
+        raise AssertionError("derive_genre_allowlist was called")
+
+    monkeypatch.setattr(recommender, "derive_genre_allowlist", boom)
+    _stub_artist_tags(monkeypatch, {
+        "edm-art": {"future bass", "melodic dubstep"},
+    })
+    picks = [Pick(artist="EdmA", title="X", mbid="rec-edm", score=10)]
+    meta = _meta({"rec-edm": ["edm-art"]})
+    explicit = {"future bass", "melodic dubstep"}
+    out = filter_picks_by_genre(picks, explicit, meta, exclude=set())
+    assert [p.mbid for p in out] == ["rec-edm"]

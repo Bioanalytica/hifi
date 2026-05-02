@@ -345,6 +345,22 @@ def parse_recommend_args(argv: list[str]) -> argparse.Namespace:
         help="Restrict picks to this MB tag (repeatable). Overrides auto-derivation.",
     )
     parser.add_argument(
+        "--seed-genre", action="append", default=[], metavar="TAG",
+        help="Genre target to expand into its neighborhood via LB Labs "
+             "tag-similarity (repeatable). Works alone (genre-only mode, "
+             "uses Troi LB-Radio) or with track seeds (locks the genre "
+             "filter to the expanded neighborhood). Overrides --genre and "
+             "the seed-derived allowlist.",
+    )
+    parser.add_argument(
+        "--genre-top-n", type=int, default=15, metavar="N",
+        help="How many neighbors to keep per --seed-genre (default: 15)",
+    )
+    parser.add_argument(
+        "--genre-min-count", type=int, default=5, metavar="N",
+        help="Drop neighbors with co-occurrence count below N (default: 5)",
+    )
+    parser.add_argument(
         "--no-genre-filter", action="store_true",
         help="Disable the seed-derived genre post-filter",
     )
@@ -417,11 +433,13 @@ def _gather_seeds(args: argparse.Namespace):
 
 
 def run_recommend(args: argparse.Namespace):
+    from hifi.genre_graph import expand_genres, expand_genres_canonical
     from hifi.library import collect_owned
     from hifi.playlist import PlaylistEntry, write
     from hifi.recommender import (
         _DEFAULT_EXCLUDE_GENRES,
-        filter_picks_by_owned, lb_radio_from_seeds, recommend, troi_lb_radio,
+        filter_picks_by_owned, lb_radio_from_genres, lb_radio_from_seeds,
+        recommend, troi_lb_radio,
     )
 
     db = Database()
@@ -437,7 +455,49 @@ def run_recommend(args: argparse.Namespace):
         for g in args.exclude_genre:
             exclude_genres.add(g.strip().lower())
 
-        if args.lb_radio_from_seeds:
+        expanded: set[str] = set()
+        canonical: list[str] = []
+        if args.seed_genre:
+            canonical = expand_genres_canonical(
+                args.seed_genre,
+                top_n=args.genre_top_n,
+                min_count=args.genre_min_count,
+            )
+            expanded = expand_genres(
+                args.seed_genre,
+                top_n=args.genre_top_n,
+                min_count=args.genre_min_count,
+            )
+            print(f"  expanded {args.seed_genre} -> "
+                  f"{len(canonical)} canonical tags ({len(expanded)} with variants)")
+            print(f"    {', '.join(canonical[:12])}"
+                  f"{' ...' if len(canonical) > 12 else ''}")
+
+        has_track_seeds = bool(args.seed or args.seed_dir or args.seed_file)
+        genre_only_mode = bool(args.seed_genre) and not has_track_seeds
+
+        if args.seed_genre and args.lb_radio_from_seeds:
+            print("  --seed-genre takes precedence over --lb-radio-from-seeds")
+
+        picks: list = []
+
+        if genre_only_mode:
+            if not expanded:
+                print("  could not expand --seed-genre into any tags")
+                return
+            prompt, picks = lb_radio_from_genres(
+                canonical, expanded, db,
+                mode=args.lb_radio_mode, limit=args.limit,
+                strict_genre=args.strict_genre,
+                exclude_genres=exclude_genres,
+                owned_mbids=owned_mbids,
+                owned_titles=owned_titles,
+            )
+            if not prompt:
+                print("  could not form an LB-Radio prompt from expansion")
+                return
+            print(f"  troi LB-Radio: {prompt!r} (mode={args.lb_radio_mode})")
+        elif args.lb_radio_from_seeds and not args.seed_genre:
             seeds = _gather_seeds(args)
             if not seeds:
                 print("  no seeds provided. Use --seed, --seed-dir, or --seed-file.")
@@ -464,7 +524,8 @@ def run_recommend(args: argparse.Namespace):
         else:
             seeds = _gather_seeds(args)
             if not seeds:
-                print("  no seeds provided. Use --seed, --seed-dir, --seed-file, or --lb-radio")
+                print("  no seeds provided. Use --seed, --seed-dir, --seed-file, "
+                      "--seed-genre, or --lb-radio")
                 return
             print(f"  seeds: {len(seeds)}")
             for s in seeds[:5]:
@@ -472,9 +533,16 @@ def run_recommend(args: argparse.Namespace):
                 print(f"    {s.artist} - {s.title}{marker}")
             if len(seeds) > 5:
                 print(f"    ... and {len(seeds) - 5} more")
+            # Allowlist precedence: --seed-genre > --genre > seed-derived.
+            if expanded:
+                genres_arg: set[str] | None = expanded
+            elif args.genre:
+                genres_arg = set(args.genre)
+            else:
+                genres_arg = None
             picks = recommend(
                 seeds, db, limit=args.limit,
-                genres=set(args.genre) if args.genre else None,
+                genres=genres_arg,
                 filter_genre=not args.no_genre_filter,
                 strict_genre=args.strict_genre,
                 exclude_genres=exclude_genres,

@@ -85,6 +85,86 @@ hifi recommend --seed-dir /mnt/intranet/Music --download 10
 
 Without the genre filter, LB's session-based collaborative filter leaks into mainstream tracks that share listening sessions with EDM (Jonas Blue, MØ, Clean Bandit, etc.) — useful as a discovery tool for some users, but usually wrong if your library is genre-focused.
 
+#### Micro-targeting a genre with `--seed-genre`
+
+Want "future bass and adjacent" instead of "more of what's in my library"? Pass `--seed-genre TAG` (repeatable). hifi expands the tag to its co-occurrence neighborhood via the LB Labs `tag-similarity/json` endpoint, applies the same anti-genre denylist (so a future-bass query never pulls in `pop`), and uses the result as the genre allowlist verbatim — overriding any seed-derived allowlist.
+
+Two operating modes:
+
+- **Genre-only mode** (no track seeds): hifi formats the expansion as a Troi LB-Radio prompt (`tag:future-bass tag:melodic-dubstep ...`) and uses Troi to source the candidate pool, then post-filters back to the expansion. Requires `hifi[troi]`.
+- **Mixed mode** (track seeds present): track seeds drive `similar-recordings` as usual; the expansion just locks the genre filter.
+
+```sh
+# Genre-only: 30 future-bass-and-adjacent tracks from cold.
+hifi recommend --seed-genre "future bass" --limit 30 \
+  --owned-dir /mnt/intranet/Music --owned-dir /mnt/c/Users/bioan/Music \
+  --download 30
+
+# Mixed: track seeds drive picks, filter is locked to the future-bass cluster.
+hifi recommend --seed-file /mnt/intranet/Music/Electr0.m3u8 \
+  --seed-sample 20 --seed-genre "future bass" --limit 30
+```
+
+Tune the expansion with `--genre-top-n N` (default 15) for a wider/narrower neighborhood and `--genre-min-count N` (default 5) to set the co-occurrence floor. Results are cached at `~/.cache/hifi/genre_graph.json` for 30 days, so warm runs are sub-millisecond. Each cache entry stores both a count-ordered canonical list (for the Troi prompt) and a variant-inclusive set (for the post-filter), so the LB tag-similarity endpoint is hit at most once per `(tag, top-n, min-count)` per month.
+
+The expansion handles separator variants — passing `"future bass"` matches MB tags `future bass`, `future-bass`, and vice versa — so picks tagged either way are kept.
+
+##### Worked example: 30 future-bass tracks from cold
+
+```sh
+# 1. Preview: dump the expansion + 30-pick table without running Troi to completion.
+#    --dry-run prints the expansion and skips downloads.
+hifi recommend \
+  --seed-genre "future bass" \
+  --owned-dir /mnt/intranet/Music --owned-dir /mnt/c/Users/bioan/Music \
+  --limit 30 --out /tmp/fb.m3u --dry-run
+
+# Output begins with:
+#   expanded ['future bass'] -> 15 canonical tags (22 with variants)
+#     future bass, trap, edm, future garage, wave, melodic house, ...
+#   troi LB-Radio: 'tag:future-bass tag:trap tag:future-garage tag:wave
+#                   tag:melodic-house tag:melodic-techno tag:melodic-trance
+#                   tag:melodic-bass' (mode=medium)
+
+# 2. If the table looks right, take the *exact* picks from the dry-run and
+#    download them deterministically (Troi's pick set varies per call, so
+#    re-running step 1 with --download 30 might pick a different 30).
+queries=()
+while IFS= read -r line; do
+  [[ $line == "# search:"* ]] && queries+=(--search "${line#\# search:}")
+done < /tmp/fb.m3u
+hifi "${queries[@]}" --output /mnt/intranet/Music/Recommended
+
+# (Or skip determinism and re-run step 1 with --download 30.)
+```
+
+##### Worked example: lock an existing seed playlist to a subgenre
+
+```sh
+# Track seeds from your library drive picks; --seed-genre overrides the
+# seed-derived allowlist so the filter is locked to the future-bass cluster
+# regardless of what the seed sample's tags say.
+hifi recommend \
+  --seed-file /mnt/intranet/Music/Electr0.m3u8 --seed-sample 20 \
+  --seed-genre "future bass" \
+  --owned-dir /mnt/intranet/Music --owned-dir /mnt/c/Users/bioan/Music \
+  --limit 30 --download 30 \
+  --output /mnt/intranet/Music/Recommended
+
+# Multiple genres union: future bass + melodic dubstep + colour bass neighborhoods
+hifi recommend \
+  --seed-genre "future bass" --seed-genre "melodic dubstep" --seed-genre "colour bass" \
+  --owned-dir /mnt/intranet/Music \
+  --limit 30 --dry-run
+
+# Tighten or widen the neighborhood:
+#   --genre-top-n 25       -> wider net (more neighbors per --seed-genre)
+#   --genre-min-count 20   -> tighter floor (drops low-count noise like artist-name tags)
+hifi recommend --seed-genre "future bass" \
+  --genre-top-n 25 --genre-min-count 20 \
+  --limit 30 --dry-run
+```
+
 #### Coverage caveats
 
 ListenBrainz's collaborative filter has thin coverage for niche EDM/electronic tracks — single-seed runs on those may return empty. Multi-seed runs (or `--seed-dir` sampling) tend to work fine because any one well-listened seed in the batch carries the result. The LB Labs `recording-mbid-lookup` endpoint currently 500s on certain MBIDs; hifi falls back to per-MBID retries and ultimately to raw (non-canonical) MBIDs so the pipeline doesn't stall.
@@ -178,9 +258,9 @@ Each download is logged in `hifi.db` with cleaned URL, format, status, MBID, and
 ## Development
 
 ```sh
-uv run pytest               # 89 tests
+uv run pytest               # 100 tests
 uv run pytest -x -k searcher
-uv run pytest -x -k genre   # genre filter unit tests
+uv run pytest -x -k genre   # genre filter + genre-graph unit tests
 ```
 
 Code layout:
@@ -194,8 +274,9 @@ src/hifi/
   downloader.py    # yt-dlp wrapper
   searcher.py      # YouTube candidate ranking + LLM tiebreak
   tagger.py        # MusicBrainz lookup + tag/cover-art embedding
-  listenbrainz.py  # LB Labs API client (similar-recordings, mbid-lookup)
+  listenbrainz.py  # LB Labs API client (similar-recordings, mbid-lookup, tag-similarity)
   library.py       # local library scanner + seed-file parser
   recommender.py   # seeds → MBIDs → similar → ranked picks
+  genre_graph.py   # tag → neighborhood expansion via LB tag-similarity
   playlist.py      # M3U / JSPF writers
 ```
