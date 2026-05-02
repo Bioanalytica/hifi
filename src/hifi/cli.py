@@ -32,6 +32,9 @@ def _parse_search_query(query: str) -> tuple[str, str]:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    from hifi import userconfig
+    cfg = userconfig.load()
+
     parser = argparse.ArgumentParser(
         prog="hifi",
         description="High-fidelity audio downloader with MusicBrainz tagging",
@@ -47,15 +50,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Explicit 'Artist - Title' search (may be repeated)",
     )
     parser.add_argument(
-        "--format", default=DEFAULT_FORMAT,
+        "--format", default=cfg.get("format", DEFAULT_FORMAT),
         choices=["best", "opus", "flac", "m4a"],
         help="Preferred output format (default: best)",
     )
     parser.add_argument(
-        "--output", default=DEFAULT_OUTPUT_DIR,
+        "--output", default=cfg.get("output", DEFAULT_OUTPUT_DIR),
         help=f"Output directory (default: {DEFAULT_OUTPUT_DIR})",
     )
     parser.add_argument("--no-tag", action="store_true",
+                        default=bool(cfg.get("no-tag", False)),
                         help="Skip MusicBrainz tagging")
     parser.add_argument("--retry", action="store_true",
                         help="Retry all failed downloads")
@@ -313,20 +317,30 @@ def run_pipeline(args: argparse.Namespace):
 
 
 def parse_recommend_args(argv: list[str]) -> argparse.Namespace:
+    from hifi import userconfig
+    cfg = userconfig.section("recommend")
+
     parser = argparse.ArgumentParser(
         prog="hifi recommend",
         description="Generate a similar-tracks playlist from seed songs.",
     )
+    # Repeatable flags use config as base; CLI invocations extend it
+    # (so a user with `owned-dirs:` in config still gets to add ad-hoc
+    # dirs on the command line).
     parser.add_argument(
-        "--seed", action="append", default=[], metavar="ARTIST_TITLE",
+        "--seed", action="append", default=list(cfg.get("seeds", []) or []),
+        metavar="ARTIST_TITLE",
         help="Explicit 'Artist - Title' seed (may be repeated)",
     )
-    parser.add_argument("--seed-dir", help="Scan a music directory for seeds")
+    parser.add_argument("--seed-dir", default=cfg.get("seed-dir"),
+                        help="Scan a music directory for seeds")
     parser.add_argument(
-        "--seed-sample", type=int, default=SEED_SAMPLE_DEFAULT,
+        "--seed-sample", type=int,
+        default=cfg.get("seed-sample", SEED_SAMPLE_DEFAULT),
         help=f"How many files to sample from --seed-dir (default: {SEED_SAMPLE_DEFAULT})",
     )
-    parser.add_argument("--seed-file", help="Read seeds from a M3U or text file")
+    parser.add_argument("--seed-file", default=cfg.get("seed-file"),
+                        help="Read seeds from a M3U or text file")
     parser.add_argument(
         "--lb-radio", metavar="PROMPT",
         help="Use Troi LB-Radio prompt syntax (requires hifi[troi])",
@@ -336,16 +350,18 @@ def parse_recommend_args(argv: list[str]) -> argparse.Namespace:
         help="Derive an LB-Radio prompt from seed artist tags (requires hifi[troi])",
     )
     parser.add_argument(
-        "--lb-radio-mode", default="medium",
+        "--lb-radio-mode", default=cfg.get("lb-radio-mode", "medium"),
         choices=["easy", "medium", "hard"],
         help="LB-Radio relevance tier (default: medium)",
     )
     parser.add_argument(
-        "--genre", action="append", default=[], metavar="TAG",
+        "--genre", action="append", default=list(cfg.get("genres", []) or []),
+        metavar="TAG",
         help="Restrict picks to this MB tag (repeatable). Overrides auto-derivation.",
     )
     parser.add_argument(
-        "--seed-genre", action="append", default=[], metavar="TAG",
+        "--seed-genre", action="append",
+        default=list(cfg.get("seed-genres", []) or []), metavar="TAG",
         help="Genre target to expand into its neighborhood via LB Labs "
              "tag-similarity (repeatable). Works alone (genre-only mode, "
              "uses Troi LB-Radio) or with track seeds (locks the genre "
@@ -353,50 +369,65 @@ def parse_recommend_args(argv: list[str]) -> argparse.Namespace:
              "the seed-derived allowlist.",
     )
     parser.add_argument(
-        "--genre-top-n", type=int, default=15, metavar="N",
+        "--genre-top-n", type=int,
+        default=cfg.get("genre-top-n", 15), metavar="N",
         help="How many neighbors to keep per --seed-genre (default: 15)",
     )
     parser.add_argument(
-        "--genre-min-count", type=int, default=5, metavar="N",
+        "--genre-min-count", type=int,
+        default=cfg.get("genre-min-count", 5), metavar="N",
         help="Drop neighbors with co-occurrence count below N (default: 5)",
     )
     parser.add_argument(
         "--no-genre-filter", action="store_true",
+        default=bool(cfg.get("no-genre-filter", False)),
         help="Disable the seed-derived genre post-filter",
     )
     parser.add_argument(
         "--strict-genre", action="store_true",
+        default=bool(cfg.get("strict-genre", False)),
         help="Drop picks with no known tags (default: keep them)",
     )
     parser.add_argument(
-        "--exclude-genre", action="append", default=[], metavar="TAG",
+        "--exclude-genre", action="append",
+        default=list(cfg.get("exclude-genres", []) or []), metavar="TAG",
         help="Hard-reject picks tagged with TAG even if they match the "
              "allowlist (repeatable). Adds to the built-in defaults: "
              "pop, country, classical, jazz, blues, christmas, etc.",
     )
     parser.add_argument(
-        "--owned-dir", action="append", default=[], metavar="PATH",
+        "--owned-dir", action="append",
+        default=list(cfg.get("owned-dirs", []) or []), metavar="PATH",
         help="Music directory to dedup against (repeatable). Picks already "
              "present (by MBID or by Artist|Title) are dropped.",
     )
     parser.add_argument(
-        "--limit", type=int, default=RECOMMEND_LIMIT_DEFAULT,
+        "--limit", type=int,
+        default=cfg.get("limit", RECOMMEND_LIMIT_DEFAULT),
         help=f"Max picks to return (default: {RECOMMEND_LIMIT_DEFAULT})",
     )
     parser.add_argument(
-        "--out", metavar="PATH",
+        "--out", default=cfg.get("out"), metavar="PATH",
         help="Write playlist to PATH (.m3u or .jspf)",
     )
     parser.add_argument(
-        "--download", type=int, metavar="N",
+        "--download", type=int, default=cfg.get("download"), metavar="N",
         help="Auto-download top N picks via the existing search pipeline",
     )
     parser.add_argument(
-        "--format", default=DEFAULT_FORMAT,
+        "--confirm", action="store_true",
+        default=bool(cfg.get("confirm", False)),
+        help="Show the picks table and prompt to download all of them. "
+             "Sets download=limit on confirmation; cancels cleanly on no.",
+    )
+    parser.add_argument(
+        "--format", default=cfg.get("format", DEFAULT_FORMAT),
         choices=["best", "opus", "flac", "m4a"],
     )
-    parser.add_argument("--output", default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--no-tag", action="store_true")
+    parser.add_argument("--output",
+                        default=cfg.get("output", DEFAULT_OUTPUT_DIR))
+    parser.add_argument("--no-tag", action="store_true",
+                        default=bool(cfg.get("no-tag", False)))
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
@@ -566,6 +597,19 @@ def run_recommend(args: argparse.Namespace):
             write(entries, args.out)
             print(f"  wrote playlist: {args.out}")
 
+        # --confirm: prompt to download all picks. Defaults to the full
+        # picks list when --download isn't explicitly set, so the typical
+        # flow becomes a single command with a yes/no at the end.
+        if args.confirm and not args.dry_run:
+            n = args.download if args.download else len(picks)
+            n = min(n, len(picks))
+            answer = input(f"  Download {n} tracks to {args.output}? [y/N]: ").strip().lower()
+            if answer in ("y", "yes"):
+                args.download = n
+            else:
+                print("  cancelled")
+                return
+
         if args.download and not args.dry_run:
             n = min(args.download, len(picks))
             print(f"\n  auto-downloading top {n}...")
@@ -586,11 +630,45 @@ def run_recommend(args: argparse.Namespace):
         db.close()
 
 
+def run_lb_status():
+    """Show LB token health, cache username if valid."""
+    from hifi import userconfig
+    from hifi.listenbrainz import _token, validate_token
+
+    tok = _token()
+    if not tok:
+        print("  no LB token. Set LISTENBRAINZ_USER_TOKEN in your env or "
+              f"~/tools/hifi/.env, then re-run.")
+        print(f"  config dir: {os.path.dirname(userconfig.config_path())}")
+        return
+
+    print(f"  token: {tok[:8]}... ({len(tok)} chars)")
+    result = validate_token()
+    if result is None:
+        print("  could not validate (network error or unexpected response)")
+        return
+
+    if not result["valid"]:
+        print(f"  INVALID: {result.get('message') or 'unknown reason'}")
+        return
+
+    user = result["user_name"]
+    print(f"  valid for user: {user!r}")
+
+    state = userconfig.load_state()
+    state["lb_user_name"] = user
+    userconfig.save_state(state)
+    print(f"  cached at {userconfig.state_path()}")
+
+
 def main():
     argv = sys.argv[1:]
     if argv and argv[0] == "recommend":
         args = parse_recommend_args(argv[1:])
         run_recommend(args)
+        return
+    if argv and argv[0] == "lb-status":
+        run_lb_status()
         return
     args = parse_args()
     run_pipeline(args)

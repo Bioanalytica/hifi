@@ -235,6 +235,27 @@ def tag_similarity(tags: list[str]) -> dict[str, list[dict]]:
     return out
 
 
+def validate_token() -> dict | None:
+    """Validate the configured LB user token via ``/1/validate-token``.
+
+    Returns ``{"valid": bool, "user_name": str | None, "message": str}``
+    on success (HTTP 200, regardless of validity), or ``None`` when the
+    request itself failed (no token, network error, non-200 response).
+    """
+    tok = _token()
+    if not tok:
+        return None
+    url = f"{LISTENBRAINZ_BASE}/validate-token"
+    raw = _get_json(url)
+    if not isinstance(raw, dict):
+        return None
+    return {
+        "valid": bool(raw.get("valid")),
+        "user_name": raw.get("user_name"),
+        "message": raw.get("message", ""),
+    }
+
+
 def metadata_recording(mbids: list[str],
                        includes: tuple[str, ...] = ("artist", "tag"),
                        ) -> dict[str, dict]:

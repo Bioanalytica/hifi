@@ -221,12 +221,30 @@ hifi recommend \
   --output /mnt/intranet/Music/Recommended
 ```
 
+#### Preview-and-confirm with `--confirm`
+
+For the typical "try a recommend, decide, download" cycle, pass `--confirm` instead of pre-saving a playlist. After the picks table prints, hifi prompts once: `Download N tracks to /mnt/intranet/Music/Recommended? [y/N]:`. Yes downloads all of them; no exits cleanly. Pairs naturally with config defaults (below) so the per-invocation command stays short.
+
+```sh
+# With config defaults set (owned-dirs, output, limit), this is everything:
+hifi recommend --seed-genre "future bass" --confirm
+
+# Or fully explicit:
+hifi recommend \
+  --seed-file /mnt/intranet/Music/Electr0.m3u8 --seed-sample 20 \
+  --owned-dir /mnt/intranet/Music --owned-dir /mnt/c/Users/bioan/Music \
+  --limit 30 --output /mnt/intranet/Music/Recommended --confirm
+```
+
+When you'd rather review the picks file before downloading, the `--out PATH --dry-run` flow (above) still works.
+
 ## Other commands
 
 ```sh
 hifi --status           # show download history and stats
 hifi --retry            # retry all failed downloads
 hifi --dry-run <url>    # see what would happen without downloading
+hifi lb-status          # validate the configured LB token, cache username
 ```
 
 ## Configuration
@@ -239,12 +257,53 @@ Defaults live in `src/hifi/config.py`:
 - `MUSICBRAINZ_QUERY_SIMILARITY = 75` (token-set ratio between MB hit and user query — combined with a stricter ≥ 90 ratio on the primary artist alone)
 - `SEED_SAMPLE_DEFAULT = 10` and `RECOMMEND_LIMIT_DEFAULT = 30`
 
+### User config file
+
+A YAML config at `~/.config/hifi/config.yml` (XDG default; honors `XDG_CONFIG_HOME`) supplies defaults for any CLI flag, so the per-invocation command stays short. Every key is optional. CLI scalars override config; repeatable flags (`--owned-dir`, `--seed-genre`, `--genre`, `--exclude-genre`) extend config rather than replace.
+
+```yaml
+# ~/.config/hifi/config.yml
+
+# Defaults for the main `hifi <url>` mode.
+output: /mnt/intranet/Music
+format: best
+
+# Defaults for `hifi recommend`.
+recommend:
+  output: /mnt/intranet/Music/Recommended
+  owned-dirs:
+    - /mnt/intranet/Music
+    - /mnt/c/Users/bioan/Music
+  limit: 30
+  seed-sample: 20
+  genre-top-n: 15
+  genre-min-count: 5
+  lb-radio-mode: medium
+  confirm: true   # auto-prompt after the picks table; set to false to opt back out
+  # download: 30  # uncomment to bypass --confirm and always download top-N
+```
+
+With the above in place, the typical run becomes:
+
+```sh
+hifi recommend --seed-genre "future bass"
+# (config supplies owned-dirs, output, limit, confirm)
+```
+
+Runtime state (cached LB username, etc.) lives at `~/.config/hifi/state.json` — written by `hifi lb-status`, never required, safe to delete.
+
 ### Environment variables
 
 A project-local `.env` is auto-loaded on `hifi` startup (via `python-dotenv`), so these can live in `~/tools/hifi/.env` instead of being exported in every shell:
 
 - `ANTHROPIC_API_KEY` — enables Claude Haiku as a tiebreaker for ambiguous YouTube candidate sets.
 - `LISTENBRAINZ_USER_TOKEN` (or `LISTENBRAINZ_TOKEN`) — attached as `Authorization: Token ...` on every LB API call. The endpoints `recommend` uses today are anonymous, so this is currently a no-op for those, but it's threaded through so future personalised features (Daily Jams, Weekly Discovery, personal recommendations) just work without re-plumbing.
+
+### Scrobbling from Android / Poweramp
+
+If you'd like LB to start learning your taste (so future personalised features — Daily Jams, Weekly Discovery, CF recommendations — actually have data to work with), install **[Pano Scrobbler](https://github.com/kawaiiDango/pano-scrobbler)** on your phone (F-Droid or Play Store). It hooks into Poweramp's standard Android music broadcasts and submits each play to ListenBrainz with your token. Programmatic submission from hifi isn't useful here — Poweramp's play counts live in its private app database on the phone (no root, no access).
+
+Once you've been scrobbling for a few weeks, the `--lb-radio-from-seeds` and similar-recordings paths get noticeably stronger because LB's collaborative filter has your listening profile to lean on. Personal Troi patches (`daily-jams`, `weekly-jams`, `weekly-exploration`) become useful then too — the plumbing's already in place via `LISTENBRAINZ_USER_TOKEN`.
 
 ### LB Core API vs Labs
 

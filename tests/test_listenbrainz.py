@@ -90,6 +90,42 @@ def test_metadata_recording_skips_malformed_entries(monkeypatch):
     assert "bad-mbid" not in out
 
 
+def test_validate_token_returns_user_info(monkeypatch):
+    monkeypatch.setenv("LISTENBRAINZ_USER_TOKEN", "fake-token")
+    monkeypatch.setattr(
+        listenbrainz, "_get_json",
+        lambda url: {"code": 200, "valid": True,
+                     "user_name": "Skeptical", "message": "Token valid."},
+    )
+    out = listenbrainz.validate_token()
+    assert out == {"valid": True, "user_name": "Skeptical",
+                   "message": "Token valid."}
+
+
+def test_validate_token_invalid(monkeypatch):
+    monkeypatch.setenv("LISTENBRAINZ_USER_TOKEN", "fake-token")
+    monkeypatch.setattr(
+        listenbrainz, "_get_json",
+        lambda url: {"code": 200, "valid": False,
+                     "user_name": None, "message": "Invalid token."},
+    )
+    out = listenbrainz.validate_token()
+    assert out["valid"] is False
+    assert out["user_name"] is None
+
+
+def test_validate_token_no_token(monkeypatch):
+    monkeypatch.delenv("LISTENBRAINZ_TOKEN", raising=False)
+    monkeypatch.delenv("LISTENBRAINZ_USER_TOKEN", raising=False)
+    assert listenbrainz.validate_token() is None
+
+
+def test_validate_token_network_failure(monkeypatch):
+    monkeypatch.setenv("LISTENBRAINZ_USER_TOKEN", "fake-token")
+    monkeypatch.setattr(listenbrainz, "_get_json", lambda url: None)
+    assert listenbrainz.validate_token() is None
+
+
 def test_token_accepts_both_env_names(monkeypatch):
     monkeypatch.delenv("LISTENBRAINZ_TOKEN", raising=False)
     monkeypatch.delenv("LISTENBRAINZ_USER_TOKEN", raising=False)
