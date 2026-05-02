@@ -24,6 +24,10 @@ FILENAME_UNSAFE = str.maketrans({
 
 LISTENBRAINZ_LABS_BASE = "https://labs.api.listenbrainz.org"
 LISTENBRAINZ_BASE = "https://api.listenbrainz.org/1"
+# Conservative chunk size for /1/metadata/recording GETs. The endpoint
+# takes recording_mbids as a query string, ~37 chars per MBID; 50 keeps
+# the URL well under typical 8KB server limits with room for `inc=`.
+LISTENBRAINZ_METADATA_CHUNK = 50
 LISTENBRAINZ_DEFAULT_ALGORITHM = (
     "session_based_days_7500_session_300_contribution_5"
     "_threshold_15_limit_50_skip_30"

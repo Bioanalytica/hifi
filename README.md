@@ -241,8 +241,17 @@ Defaults live in `src/hifi/config.py`:
 
 ### Environment variables
 
+A project-local `.env` is auto-loaded on `hifi` startup (via `python-dotenv`), so these can live in `~/tools/hifi/.env` instead of being exported in every shell:
+
 - `ANTHROPIC_API_KEY` — enables Claude Haiku as a tiebreaker for ambiguous YouTube candidate sets.
-- `LISTENBRAINZ_TOKEN` — currently unused (the Labs endpoints `recommend` uses are anonymous), but threaded through the LB client for future personalised features (Daily Jams, Weekly Discovery).
+- `LISTENBRAINZ_USER_TOKEN` (or `LISTENBRAINZ_TOKEN`) — attached as `Authorization: Token ...` on every LB API call. The endpoints `recommend` uses today are anonymous, so this is currently a no-op for those, but it's threaded through so future personalised features (Daily Jams, Weekly Discovery, personal recommendations) just work without re-plumbing.
+
+### LB Core API vs Labs
+
+`recommend` talks to two distinct LB API tiers:
+
+- **Core API** (`api.listenbrainz.org/1`) is the production endpoint. We use it for `metadata/recording` (bulk MBID → artist + inline tags). It's stable and returns artist tags directly, so the genre filter doesn't need to fan out to per-artist MusicBrainz lookups (which are rate-limited at 1 req/sec).
+- **Labs API** (`labs.api.listenbrainz.org`) is the research/experimental endpoint. We use it for `similar-recordings/json` (the only place to get session-based collaborative-filter neighbors), `tag-similarity/json` (powers `--seed-genre` expansion), and `recording-mbid-lookup/json` (the only endpoint that returns canonical recording MBIDs for cross-version dedup before `similar-recordings`). The Labs API intermittently 500s on individual MBIDs and on batched lookups; `recommend` falls back gracefully — Core API for tags/artists when Labs is down, and raw (non-canonical) MBIDs when Labs can't canonicalize.
 
 ## Output
 
@@ -258,9 +267,10 @@ Each download is logged in `hifi.db` with cleaned URL, format, status, MBID, and
 ## Development
 
 ```sh
-uv run pytest               # 100 tests
+uv run pytest               # 107 tests
 uv run pytest -x -k searcher
 uv run pytest -x -k genre   # genre filter + genre-graph unit tests
+uv run pytest -x -k listenbrainz   # LB API client tests
 ```
 
 Code layout:
@@ -274,7 +284,7 @@ src/hifi/
   downloader.py    # yt-dlp wrapper
   searcher.py      # YouTube candidate ranking + LLM tiebreak
   tagger.py        # MusicBrainz lookup + tag/cover-art embedding
-  listenbrainz.py  # LB Labs API client (similar-recordings, mbid-lookup, tag-similarity)
+  listenbrainz.py  # LB API client — Core (metadata/recording) + Labs (similar-recordings, tag-similarity, recording-mbid-lookup)
   library.py       # local library scanner + seed-file parser
   recommender.py   # seeds → MBIDs → similar → ranked picks
   genre_graph.py   # tag → neighborhood expansion via LB tag-similarity

@@ -125,6 +125,35 @@ def test_owned_filter_no_owned_passes_through():
     assert filter_picks_by_owned(picks, set(), set()) == picks
 
 
+def test_tags_for_recording_prefers_inline(monkeypatch):
+    """When meta carries inline_tags (Core API path), the filter uses
+    them directly instead of fanning out to per-artist MB calls."""
+    # If _artist_tags is called, we treat that as an unwanted slow-path hit.
+    def boom(*a, **k):
+        raise AssertionError("_artist_tags should not be called when "
+                             "inline_tags are present")
+
+    monkeypatch.setattr(recommender, "_artist_tags", boom)
+    meta = {"rec-1": {"inline_tags": {"future bass", "melodic dubstep"}}}
+    tags = recommender._tags_for_recording("rec-1", meta)
+    assert tags == {"future bass", "melodic dubstep"}
+
+
+def test_tags_for_recording_falls_back_when_no_inline(monkeypatch):
+    """When inline_tags is missing, fall back to per-artist MB lookup."""
+    captured: list[str] = []
+
+    def fake_artist_tags(amb: str) -> set[str]:
+        captured.append(amb)
+        return {"trance"}
+
+    monkeypatch.setattr(recommender, "_artist_tags", fake_artist_tags)
+    meta = {"rec-1": {"artist_mbids": ["amb-1", "amb-2"]}}
+    tags = recommender._tags_for_recording("rec-1", meta)
+    assert tags == {"trance"}
+    assert captured == ["amb-1", "amb-2"]
+
+
 def test_filter_with_explicit_allowlist_skips_seed_derivation(monkeypatch):
     """When an explicit allowlist (from --seed-genre or --genre) is passed
     to the recommend orchestrator, derive_genre_allowlist should not be

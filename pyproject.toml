@@ -12,6 +12,7 @@ dependencies = [
     "musicbrainzngs>=0.7",
     "mutagen>=1.46",
     "rapidfuzz>=3.0",
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]

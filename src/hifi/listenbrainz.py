@@ -17,8 +17,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from hifi.config import (
+    LISTENBRAINZ_BASE,
     LISTENBRAINZ_LABS_BASE,
     LISTENBRAINZ_DEFAULT_ALGORITHM,
+    LISTENBRAINZ_METADATA_CHUNK,
 )
 
 log = logging.getLogger(__name__)
@@ -37,7 +39,15 @@ class SimilarRec:
 
 
 def _token() -> str | None:
-    return os.environ.get("LISTENBRAINZ_TOKEN")
+    """Read the user's LB token from env, accepting either spelling.
+
+    LB doesn't standardize a name; ``LISTENBRAINZ_USER_TOKEN`` is the
+    convention used by the official CLI and most docs, but some users
+    have ``LISTENBRAINZ_TOKEN`` for brevity. We honor either, preferring
+    the longer one when both are set.
+    """
+    return (os.environ.get("LISTENBRAINZ_USER_TOKEN")
+            or os.environ.get("LISTENBRAINZ_TOKEN"))
 
 
 def _post_json(url: str, body: Any) -> Any:
@@ -223,6 +233,76 @@ def tag_similarity(tags: list[str]) -> dict[str, list[dict]]:
                           "count": int(cnt)})
         out[t] = clean
     return out
+
+
+def metadata_recording(mbids: list[str],
+                       includes: tuple[str, ...] = ("artist", "tag"),
+                       ) -> dict[str, dict]:
+    """Bulk-resolve recording MBIDs via the LB *Core* API.
+
+    Hits ``/1/metadata/recording/?recording_mbids=...&inc=artist+tag``,
+    which is the production endpoint (not the flaky Labs research API).
+    Returns inline tags directly so callers can skip per-artist MB
+    lookups in the hot path of the genre filter.
+
+    Returns ``{mbid: {artist_credit_name, recording_name, release_name,
+    length, artist_mbids: list[str], inline_tags: set[str],
+    canonical_recording_mbid: None}}``. The ``canonical_recording_mbid``
+    field is always ``None`` because the Core API doesn't surface it;
+    callers that need canonicalization should use ``recording_lookup``
+    or ``lookup_with_retry`` instead.
+
+    Auth-optional: if ``LISTENBRAINZ_TOKEN`` is set, it's attached as
+    ``Authorization: Token ...`` (helps with future personalized
+    endpoints; doesn't gate this anonymous one).
+    """
+    if not mbids:
+        return {}
+    inc = "+".join(includes) if includes else ""
+    out: dict[str, dict] = {}
+    for i in range(0, len(mbids), LISTENBRAINZ_METADATA_CHUNK):
+        chunk = mbids[i:i + LISTENBRAINZ_METADATA_CHUNK]
+        params = "recording_mbids=" + ",".join(chunk)
+        if inc:
+            params += "&inc=" + inc
+        url = f"{LISTENBRAINZ_BASE}/metadata/recording/?{params}"
+        raw = _get_json(url)
+        if not isinstance(raw, dict):
+            continue
+        for mbid, info in raw.items():
+            if not isinstance(info, dict):
+                continue
+            out[mbid] = _parse_metadata_recording(mbid, info)
+    return out
+
+
+def _parse_metadata_recording(mbid: str, info: dict) -> dict:
+    artist_block = info.get("artist") or {}
+    recording_block = info.get("recording") or {}
+    release_block = info.get("release") or {}
+    tag_block = info.get("tag") or {}
+
+    artist_mbids: list[str] = []
+    for a in artist_block.get("artists") or []:
+        amb = a.get("artist_mbid")
+        if amb and amb not in artist_mbids:
+            artist_mbids.append(amb)
+
+    inline_tags: set[str] = set()
+    for entry in tag_block.get("artist") or []:
+        t = (entry.get("tag") or "").strip().lower()
+        if t:
+            inline_tags.add(t)
+
+    return {
+        "artist_credit_name": artist_block.get("name"),
+        "recording_name": recording_block.get("name"),
+        "release_name": release_block.get("name"),
+        "length": recording_block.get("length"),
+        "canonical_recording_mbid": None,
+        "artist_mbids": artist_mbids,
+        "inline_tags": inline_tags,
+    }
 
 
 def canonicalize_mbids(mbids: list[str]) -> dict[str, str]:

@@ -20,6 +20,7 @@ from hifi.listenbrainz import (
     SimilarRec,
     canonicalize_mbids,
     lookup_with_retry,
+    metadata_recording,
     similar_recordings,
 )
 from hifi.tagger import search_musicbrainz
@@ -176,14 +177,25 @@ def _artist_tags(artist_mbid: str) -> set[str]:
 def _tags_for_recording(recording_mbid: str,
                         meta: dict[str, dict],
                         mb_fallback: bool = False) -> set[str]:
-    """Union of artist tags across every artist credited on a recording.
+    """Union of artist tags credited on a recording.
 
-    When ``mb_fallback`` is set and LB Labs gave us no artist mbids for
-    this recording, we ask MusicBrainz directly for the recording's
-    artist credit (one MB call). Slow but reliable; reserved for picks
-    we're seriously considering, not the full candidate pool.
+    Fast path: when the meta dict carries ``inline_tags`` (the LB Core
+    API ``/1/metadata/recording`` endpoint returns these directly), we
+    use them and skip the per-artist MB lookup entirely. Saves ~1s per
+    pick versus the old slow path (musicbrainzngs is rate-limited at
+    1 req/sec).
+
+    Slow path: per-artist tag lookup via musicbrainzngs, optionally
+    seeded by an MB recording lookup when LB gave us no artist info.
+    Only reached when the caller passes legacy meta from the Labs
+    ``recording-mbid-lookup`` endpoint.
     """
     info = meta.get(recording_mbid) or {}
+
+    inline = info.get("inline_tags")
+    if inline is not None:
+        return set(inline)
+
     artist_mbids = list(info.get("artist_mbids") or [])
     if not artist_mbids and mb_fallback:
         try:
@@ -304,8 +316,28 @@ def recommend(seeds: list[Seed], db: Database,
         return []
 
     raw_mbids = [s.mbid for s in resolved if s.mbid]
-    # One lookup serves both canonicalization and seed-tag derivation.
-    seed_meta = lookup_with_retry(raw_mbids)
+    # Two endpoints serve two needs:
+    #  - Labs `recording-mbid-lookup` is the only place that returns
+    #    canonical_recording_mbid (used to dedupe Album-Edit vs Original-
+    #    Mix MBIDs before similar-recordings). It's research API and
+    #    intermittently 500s; we tolerate that by falling back to the
+    #    raw input MBIDs when canonicalization isn't available.
+    #  - Core `metadata/recording` is the production endpoint that
+    #    returns artist mbids + inline tags directly. It's stable and
+    #    drives the genre allowlist derivation, so we want it even when
+    #    Labs is down.
+    seed_meta_labs = lookup_with_retry(raw_mbids)
+    seed_meta_core = metadata_recording(raw_mbids)
+    seed_meta: dict[str, dict] = {}
+    for m in raw_mbids:
+        info = dict(seed_meta_core.get(m, {}))
+        labs = seed_meta_labs.get(m) or {}
+        if labs.get("canonical_recording_mbid"):
+            info["canonical_recording_mbid"] = labs["canonical_recording_mbid"]
+        # Backfill artist_mbids from Labs when Core has none (rare).
+        if not info.get("artist_mbids") and labs.get("artist_mbids"):
+            info["artist_mbids"] = labs["artist_mbids"]
+        seed_meta[m] = info
     canon_map = {
         m: info["canonical_recording_mbid"]
         for m, info in seed_meta.items()
@@ -346,7 +378,11 @@ def recommend(seeds: list[Seed], db: Database,
                  len(picks), before)
 
     if (allowlist or exclude_genres is not None) and picks:
-        pick_meta = lookup_with_retry([p.mbid for p in picks])
+        # Use the LB Core API /1/metadata/recording endpoint here — it
+        # returns inline tags directly, so the genre filter doesn't have
+        # to fan out to musicbrainzngs (1/sec rate-limit) per pick. Falls
+        # back gracefully to MB direct lookup when Core returns nothing.
+        pick_meta = metadata_recording([p.mbid for p in picks])
         before = len(picks)
         picks = filter_picks_by_genre(picks, allowlist, pick_meta,
                                        strict=strict_genre,
@@ -453,7 +489,10 @@ def lb_radio_from_seeds(seeds: list[Seed], db: Database,
     raw_mbids = [s.mbid for s in resolved if s.mbid]
     if not raw_mbids:
         return "", []
-    seed_meta = lookup_with_retry(raw_mbids)
+    # Core API gives us inline tags directly; we don't need Labs
+    # canonicalization for the LB-Radio-from-seeds path because it
+    # builds a tag prompt rather than running similar-recordings.
+    seed_meta = metadata_recording(raw_mbids)
 
     prompt = _format_lb_radio_prompt(raw_mbids, seed_meta)
     if not prompt:
@@ -478,7 +517,7 @@ def lb_radio_from_seeds(seeds: list[Seed], db: Database,
 
     if (filter_genre or exclude_genres is not None) and picks:
         allowlist = derive_genre_allowlist(raw_mbids, seed_meta) if filter_genre else set()
-        pick_meta = lookup_with_retry([p.mbid for p in picks])
+        pick_meta = metadata_recording([p.mbid for p in picks])
         before = len(picks)
         picks = filter_picks_by_genre(picks, allowlist, pick_meta,
                                       strict=strict_genre,
@@ -534,7 +573,7 @@ def lb_radio_from_genres(canonical_tags: list[str],
                  len(picks), before)
 
     if (allowlist_variants or exclude_genres is not None) and picks:
-        pick_meta = lookup_with_retry([p.mbid for p in picks])
+        pick_meta = metadata_recording([p.mbid for p in picks])
         before = len(picks)
         picks = filter_picks_by_genre(picks, allowlist_variants, pick_meta,
                                       strict=strict_genre,
