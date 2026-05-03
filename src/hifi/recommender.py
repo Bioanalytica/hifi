@@ -558,7 +558,11 @@ def lb_radio_from_genres(canonical_tags: list[str],
     if not prompt:
         return "", []
 
-    over_fetch = max(limit * 3, 50)
+    # Genre-only mode is the most filter-heavy path: large libraries
+    # eat 80%+ of Troi's output via owned-dir dedup, and the genre
+    # filter then trims more on top. Over-fetch aggressively so the
+    # final picks list isn't a single track.
+    over_fetch = max(limit * 10, 200)
     picks = troi_lb_radio(prompt, mode, limit=over_fetch)
     if not picks:
         return prompt, []

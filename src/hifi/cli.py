@@ -630,6 +630,99 @@ def run_recommend(args: argparse.Namespace):
         db.close()
 
 
+def parse_tags_args(argv: list[str]) -> argparse.Namespace:
+    from hifi import userconfig
+    cfg = userconfig.section("recommend")  # reuses recommend's seed config
+
+    parser = argparse.ArgumentParser(
+        prog="hifi tags",
+        description="Print the MB tags associated with seed songs.",
+    )
+    parser.add_argument(
+        "--seed", action="append", default=list(cfg.get("seeds", []) or []),
+        metavar="ARTIST_TITLE",
+        help="Explicit 'Artist - Title' seed (may be repeated)",
+    )
+    parser.add_argument("--seed-dir", default=cfg.get("seed-dir"),
+                        help="Scan a music directory for seeds")
+    parser.add_argument("--seed-file", default=cfg.get("seed-file"),
+                        help="Read seeds from a M3U or text file")
+    parser.add_argument(
+        "--seed-sample", type=int,
+        default=cfg.get("seed-sample", SEED_SAMPLE_DEFAULT),
+        help=f"How many files to sample from --seed-dir/-file "
+             f"(default: {SEED_SAMPLE_DEFAULT})",
+    )
+    parser.add_argument(
+        "--top", type=int, default=30, metavar="N",
+        help="How many tags to show in the aggregate frequency table "
+             "(default: 30)",
+    )
+    parser.add_argument(
+        "--no-per-track", action="store_true",
+        help="Skip the per-track tag listing; show only the aggregate.",
+    )
+    return parser.parse_args(argv)
+
+
+def run_tags(args: argparse.Namespace):
+    from collections import Counter
+    from hifi.listenbrainz import metadata_recording
+    from hifi.recommender import resolve_seed_mbids
+
+    db = Database()
+    try:
+        seeds = _gather_seeds(args)
+        if not seeds:
+            print("  no seeds provided. Use --seed, --seed-dir, or --seed-file.")
+            return
+
+        print(f"  seeds: {len(seeds)}")
+        resolved = resolve_seed_mbids(seeds, db)
+        if not resolved:
+            print("  none of the seeds resolved to MBIDs")
+            return
+
+        mbids = [s.mbid for s in resolved if s.mbid]
+        meta = metadata_recording(mbids)
+
+        # Aggregate tag frequency across all seeds.
+        counter: Counter[str] = Counter()
+        per_track: list[tuple[str, str, set[str]]] = []
+        for s in resolved:
+            tags = set((meta.get(s.mbid) or {}).get("inline_tags") or set())
+            counter.update(tags)
+            per_track.append((s.artist, s.title, tags))
+
+        if not counter:
+            print("  no tags found for any seed")
+            return
+
+        # Aggregate view.
+        print(f"\n  aggregate tag frequency (top {args.top}):")
+        print(f"  {'count':>5}  tag")
+        print(f"  {'-' * 5}  " + "-" * 50)
+        for tag, n in counter.most_common(args.top):
+            print(f"  {n:>5}  {tag}")
+
+        if args.no_per_track:
+            return
+
+        # Per-track view.
+        print("\n  per-track tags:")
+        for artist, title, tags in per_track:
+            line = f"{artist} - {title}"
+            if len(line) > 70:
+                line = line[:67] + "..."
+            tag_str = ", ".join(sorted(tags)) if tags else "(none)"
+            if len(tag_str) > 100:
+                tag_str = tag_str[:97] + "..."
+            print(f"  {line}")
+            print(f"      {tag_str}")
+    finally:
+        db.close()
+
+
 def run_lb_status():
     """Show LB token health, cache username if valid."""
     from hifi import userconfig
@@ -669,6 +762,10 @@ def main():
         return
     if argv and argv[0] == "lb-status":
         run_lb_status()
+        return
+    if argv and argv[0] == "tags":
+        args = parse_tags_args(argv[1:])
+        run_tags(args)
         return
     args = parse_args()
     run_pipeline(args)

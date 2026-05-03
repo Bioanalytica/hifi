@@ -245,7 +245,42 @@ hifi --status           # show download history and stats
 hifi --retry            # retry all failed downloads
 hifi --dry-run <url>    # see what would happen without downloading
 hifi lb-status          # validate the configured LB token, cache username
+hifi tags --seed-file ~/x.m3u  # show MB tags for the songs in a playlist
 ```
+
+### `hifi tags`
+
+Shows what MB tags are associated with the songs in a playlist (or seed dir, or explicit `--seed`s). Useful for picking a `--seed-genre` value, debugging why the genre filter is dropping picks, or just understanding what subgenres your library leans on.
+
+```sh
+# Aggregate tag frequency across 20 seeds + per-track tag listing.
+hifi tags --seed-file /mnt/intranet/Music/Melodic.m3u8 --seed-sample 20
+
+# Aggregate-only (skip per-track lines).
+hifi tags --seed-file ~/playlist.m3u --no-per-track --top 50
+```
+
+Output looks like:
+
+```
+  aggregate tag frequency (top 15):
+  count  tag
+  -----  ------------------------------
+      2  dubstep
+      2  edm
+      2  electro house
+      2  complextro
+      2  electronic
+      ...
+
+  per-track tags:
+  Mt Eden - Sierra Leone
+      dubstep, jazz
+  deadmau5 - Ghosts 'n' Stuff (original instrumental mix)
+      bass house, breakbeat, club, complextro, dance, deep house, dubstep, edm, electro, ...
+```
+
+Backed by the Core API `metadata/recording` endpoint (single batch call), so it's fast even on large samples.
 
 ## Configuration
 
