@@ -68,3 +68,48 @@ def test_state_handles_corrupt_file(monkeypatch, tmp_path):
     _redirect_paths(monkeypatch, tmp_path)
     (tmp_path / "state.json").write_text("not json {")
     assert userconfig.load_state() == {}
+
+
+def test_profiles_dir_under_config_dir(monkeypatch, tmp_path):
+    _redirect_paths(monkeypatch, tmp_path)
+    assert userconfig.profiles_dir() == str(tmp_path / "profiles")
+
+
+def test_load_profile_returns_empty_when_missing(monkeypatch, tmp_path):
+    _redirect_paths(monkeypatch, tmp_path)
+    assert userconfig.load_profile("rock") == {}
+
+
+def test_load_profile_parses_yaml(monkeypatch, tmp_path):
+    _redirect_paths(monkeypatch, tmp_path)
+    (tmp_path / "profiles").mkdir()
+    (tmp_path / "profiles" / "rock.yml").write_text(
+        "seed-file: /tmp/Rock.m3u8\n"
+        "limit: 25\n"
+        "exclude-genres:\n"
+        "  - dance-pop\n"
+        "  - country\n"
+    )
+    p = userconfig.load_profile("rock")
+    assert p["seed-file"] == "/tmp/Rock.m3u8"
+    assert p["limit"] == 25
+    assert p["exclude-genres"] == ["dance-pop", "country"]
+
+
+def test_load_profile_ignores_non_mapping(monkeypatch, tmp_path):
+    _redirect_paths(monkeypatch, tmp_path)
+    (tmp_path / "profiles").mkdir()
+    (tmp_path / "profiles" / "weird.yml").write_text("- just\n- a\n- list\n")
+    assert userconfig.load_profile("weird") == {}
+
+
+def test_load_profile_handles_invalid_yaml(monkeypatch, tmp_path):
+    _redirect_paths(monkeypatch, tmp_path)
+    (tmp_path / "profiles").mkdir()
+    (tmp_path / "profiles" / "broken.yml").write_text("limit: [unclosed\n")
+    assert userconfig.load_profile("broken") == {}
+
+
+def test_load_profile_empty_name_returns_empty(monkeypatch, tmp_path):
+    _redirect_paths(monkeypatch, tmp_path)
+    assert userconfig.load_profile("") == {}

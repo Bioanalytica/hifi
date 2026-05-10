@@ -154,6 +154,85 @@ def test_tags_for_recording_falls_back_when_no_inline(monkeypatch):
     assert captured == ["amb-1", "amb-2"]
 
 
+def test_filter_drops_when_required_tags_missing(monkeypatch):
+    _stub_artist_tags(monkeypatch, {
+        "piano-art": {"piano", "neoclassical"},
+        "rock-art": {"alternative rock", "indie"},
+    })
+    picks = [
+        Pick(artist="Pi", title="A", mbid="rec-piano", score=10),
+        Pick(artist="Ro", title="B", mbid="rec-rock", score=20),
+    ]
+    meta = _meta({"rec-piano": ["piano-art"], "rec-rock": ["rock-art"]})
+    out = filter_picks_by_genre(
+        picks, set(), meta, exclude=set(),
+        require_tags={"piano", "pianist", "neoclassical"},
+    )
+    assert [p.mbid for p in out] == ["rec-piano"]
+
+
+def test_filter_keeps_when_required_tags_match_any(monkeypatch):
+    _stub_artist_tags(monkeypatch, {
+        "art-1": {"modern classical", "soundtrack"},
+    })
+    picks = [Pick(artist="X", title="Y", mbid="rec-1", score=5)]
+    meta = _meta({"rec-1": ["art-1"]})
+    out = filter_picks_by_genre(
+        picks, set(), meta, exclude=set(),
+        require_tags={"piano", "modern classical"},  # any-match
+    )
+    assert [p.mbid for p in out] == ["rec-1"]
+
+
+def test_filter_drops_when_forbid_tags_match(monkeypatch):
+    _stub_artist_tags(monkeypatch, {
+        "art-1": {"piano", "drums", "neoclassical"},
+    })
+    picks = [Pick(artist="X", title="Y", mbid="rec-1", score=5)]
+    meta = _meta({"rec-1": ["art-1"]})
+    out = filter_picks_by_genre(
+        picks, set(), meta, exclude=set(),
+        forbid_tags={"drums", "bass guitar"},
+    )
+    assert out == []
+
+
+def test_filter_require_and_forbid_combined(monkeypatch):
+    _stub_artist_tags(monkeypatch, {
+        "good": {"piano", "neoclassical"},
+        "has-drums": {"piano", "drums"},
+        "no-piano": {"orchestra"},
+    })
+    picks = [
+        Pick(artist="A", title="A", mbid="rec-good", score=3),
+        Pick(artist="B", title="B", mbid="rec-drums", score=2),
+        Pick(artist="C", title="C", mbid="rec-noP", score=1),
+    ]
+    meta = _meta({
+        "rec-good": ["good"],
+        "rec-drums": ["has-drums"],
+        "rec-noP": ["no-piano"],
+    })
+    out = filter_picks_by_genre(
+        picks, set(), meta, exclude=set(),
+        require_tags={"piano", "neoclassical"},
+        forbid_tags={"drums"},
+    )
+    assert [p.mbid for p in out] == ["rec-good"]
+
+
+def test_filter_with_no_require_or_forbid_unchanged(monkeypatch):
+    """Regression: when neither require nor forbid is supplied, behavior
+    matches the pre-feature path exactly (allowlist + exclude only)."""
+    _stub_artist_tags(monkeypatch, {"art": {"future bass"}})
+    picks = [Pick(artist="X", title="Y", mbid="rec-1", score=1)]
+    meta = _meta({"rec-1": ["art"]})
+    out = filter_picks_by_genre(
+        picks, {"future bass"}, meta, exclude=set(),
+    )
+    assert [p.mbid for p in out] == ["rec-1"]
+
+
 def test_filter_with_explicit_allowlist_skips_seed_derivation(monkeypatch):
     """When an explicit allowlist (from --seed-genre or --genre) is passed
     to the recommend orchestrator, derive_genre_allowlist should not be

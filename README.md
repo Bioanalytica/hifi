@@ -327,6 +327,33 @@ hifi recommend --seed-genre "future bass"
 
 Runtime state (cached LB username, etc.) lives at `~/.config/hifi/state.json` — written by `hifi lb-status`, never required, safe to delete.
 
+### Genre profiles
+
+A profile is a YAML file at `~/.config/hifi/profiles/<name>.yml`, selected with `--profile <name>`. It merges on top of the `recommend:` config section (profile keys win on conflicts), and CLI flags still win over both. Three reference profiles ship under `examples/profiles/`.
+
+```sh
+# One-time setup:
+mkdir -p ~/.config/hifi/profiles
+cp examples/profiles/rock.yml examples/profiles/piano.yml ~/.config/hifi/profiles/
+
+# Daily use:
+hifi recommend --profile rock         # picks driven by Rock OTG, no EDM denylist
+hifi recommend --profile piano        # neoclassical seed, piano-required filter
+hifi tags --profile piano             # what tags your Piano playlist actually carries
+```
+
+**`exclude-genres` semantics**: when a profile (or CLI flag) supplies any `exclude-genres`, that list **replaces** the EDM-default denylist (so a rock profile can let `rock` / `alternative rock` / `metal` through). When nothing is supplied, the EDM defaults apply — backwards-compatible with pre-profile usage.
+
+**`require-tags`** (new): a pick must carry at least one of these MB tags. Used by the piano profile to demand a piano-related signal — picks tagged with at least one of `{piano, pianist, neoclassical, modern classical, contemporary classical, solo piano, classical, cinematic}` survive; everything else gets dropped. Repeatable on the CLI: `--require-tag TAG`.
+
+**`forbid-tags`** (new): a pick must have NONE of these tags. Stricter than `exclude-genres`; intended for non-genre signals (e.g. instrument tags). Repeatable on the CLI: `--forbid-tag TAG`.
+
+#### Why not seed-genre `solo piano`?
+
+LB Labs `tag-similarity/json` is too thin on instrument-specific tags. `solo piano` returns 452 max hits then sparse data; `piano cover` returns 6 (useless). The well-populated seeds for the modern-classical / virtuoso piano cover space are `neoclassical` (1440 hits) and `modern classical` (760), which is also how MB classifies artists like Yiruma (`modern classical, contemporary classical, classical crossover, soundtrack, pianist`). The piano profile uses those as `seed-genres` and uses `require-tags` to keep only piano-adjacent picks from Troi's output.
+
+Note: MB does NOT expose performer:instrument credits at the recording level via the public API (verified empty `relations[]` even with `inc=artist-rels+recording-rels+work-rels`). So we can't programmatically tell "this recording has drums" from "this recording is solo piano" — filtering is tag-based only. With moderate strictness, some band-instrumented neoclassical may slip through (e.g., post-rock-adjacent neoclassical with cinematic strings + drums). That's the chosen tradeoff against dropping legitimate-but-niche picks.
+
 ### Environment variables
 
 A project-local `.env` is auto-loaded on `hifi` startup (via `python-dotenv`), so these can live in `~/tools/hifi/.env` instead of being exported in every shell:
@@ -361,10 +388,11 @@ Each download is logged in `hifi.db` with cleaned URL, format, status, MBID, and
 ## Development
 
 ```sh
-uv run pytest               # 107 tests
+uv run pytest               # 137 tests
 uv run pytest -x -k searcher
 uv run pytest -x -k genre   # genre filter + genre-graph unit tests
 uv run pytest -x -k listenbrainz   # LB API client tests
+uv run pytest -x -k profile # profile pre-pass + merge tests
 ```
 
 Code layout:

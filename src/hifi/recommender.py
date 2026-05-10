@@ -254,12 +254,25 @@ def filter_picks_by_genre(picks: list[Pick], allowlist: set[str],
                           pick_meta: dict[str, dict],
                           strict: bool = False,
                           exclude: set[str] | None = None,
+                          require_tags: set[str] | None = None,
+                          forbid_tags: set[str] | None = None,
                           limit: int | None = None) -> list[Pick]:
     """Drop picks whose artist tags don't intersect ``allowlist``.
 
-    Hard-rejects any pick whose tags intersect ``exclude`` (defaults to
-    ``_DEFAULT_EXCLUDE_GENRES``) so EDM-crossover artists tagged both
-    "edm" and "pop" don't slip through on the "edm" match.
+    Filter pipeline per pick (after tag fetch + MB fallback):
+
+    1. ``forbid_tags``: hard-rejects picks tagged with any of these
+       (profile-supplied ``forbid-tags``). Independent of and stricter
+       than ``exclude``.
+    2. ``exclude``: hard-rejects picks tagged with any of these (defaults
+       to ``_DEFAULT_EXCLUDE_GENRES``) so EDM-crossover artists tagged
+       both ``edm`` and ``pop`` don't slip through on the ``edm`` match.
+    3. ``allowlist``: pick must intersect (or pass through if allowlist
+       is empty).
+    4. ``require_tags``: when non-empty, pick must intersect at least
+       one of these. Used by profiles that demand a topic signal —
+       e.g. the piano profile requires at least one of {piano, pianist,
+       neoclassical, modern classical, ...}.
 
     When LB Labs gave us no metadata for a pick we'd otherwise consider,
     we fall back to a direct MusicBrainz recording lookup so we don't
@@ -272,7 +285,10 @@ def filter_picks_by_genre(picks: list[Pick], allowlist: set[str],
     keep it. Pass ``strict=True`` to drop those instead.
     """
     deny = _DEFAULT_EXCLUDE_GENRES if exclude is None else exclude
-    if not allowlist and not deny:
+    forbid = forbid_tags or set()
+    require = require_tags or set()
+
+    if not allowlist and not deny and not forbid and not require:
         return picks
 
     sorted_picks = sorted(picks,
@@ -286,19 +302,24 @@ def filter_picks_by_genre(picks: list[Pick], allowlist: set[str],
         if not tags:
             # LB had no artist info; ask MB directly. Slow but correct.
             tags = _tags_for_recording(p.mbid, pick_meta, mb_fallback=True)
+        if tags and (forbid and (tags & forbid)):
+            continue
         if tags and (tags & deny):
             continue
         if not tags:
             # No tag info at all — both LB Labs and MB came up empty.
-            # When the caller has a denylist active they're explicit
-            # about exclusions, so don't trust unknowns. Pure-allowlist
-            # callers stay lenient.
-            if strict or deny:
+            # When the caller has a denylist or require_tags active
+            # they're explicit about constraints, so don't trust
+            # unknowns. Pure-allowlist callers stay lenient.
+            if strict or deny or require:
                 continue
             kept.append(p)
             continue
-        if not allowlist or (tags & allowlist):
-            kept.append(p)
+        if allowlist and not (tags & allowlist):
+            continue
+        if require and not (tags & require):
+            continue
+        kept.append(p)
     return kept
 
 
@@ -308,6 +329,8 @@ def recommend(seeds: list[Seed], db: Database,
               filter_genre: bool = True,
               strict_genre: bool = False,
               exclude_genres: set[str] | None = None,
+              require_tags: set[str] | None = None,
+              forbid_tags: set[str] | None = None,
               owned_mbids: set[str] | None = None,
               owned_titles: set[str] | None = None) -> list[Pick]:
     resolved = resolve_seed_mbids(seeds, db)
@@ -377,7 +400,8 @@ def recommend(seeds: list[Seed], db: Database,
         log.info("owned-dir title filter: kept %d of %d picks",
                  len(picks), before)
 
-    if (allowlist or exclude_genres is not None) and picks:
+    if (allowlist or exclude_genres is not None
+            or require_tags or forbid_tags) and picks:
         # Use the LB Core API /1/metadata/recording endpoint here — it
         # returns inline tags directly, so the genre filter doesn't have
         # to fan out to musicbrainzngs (1/sec rate-limit) per pick. Falls
@@ -387,6 +411,8 @@ def recommend(seeds: list[Seed], db: Database,
         picks = filter_picks_by_genre(picks, allowlist, pick_meta,
                                        strict=strict_genre,
                                        exclude=exclude_genres,
+                                       require_tags=require_tags,
+                                       forbid_tags=forbid_tags,
                                        limit=limit)
         log.info("genre filter: kept %d of %d picks", len(picks), before)
         if not picks:
@@ -477,6 +503,8 @@ def lb_radio_from_seeds(seeds: list[Seed], db: Database,
                         filter_genre: bool = True,
                         strict_genre: bool = False,
                         exclude_genres: set[str] | None = None,
+                        require_tags: set[str] | None = None,
+                        forbid_tags: set[str] | None = None,
                         owned_mbids: set[str] | None = None,
                         owned_titles: set[str] | None = None,
                         ) -> tuple[str, list[Pick]]:
@@ -515,13 +543,16 @@ def lb_radio_from_seeds(seeds: list[Seed], db: Database,
         log.info("LB-Radio owned filter: kept %d of %d picks",
                  len(picks), before)
 
-    if (filter_genre or exclude_genres is not None) and picks:
+    if (filter_genre or exclude_genres is not None
+            or require_tags or forbid_tags) and picks:
         allowlist = derive_genre_allowlist(raw_mbids, seed_meta) if filter_genre else set()
         pick_meta = metadata_recording([p.mbid for p in picks])
         before = len(picks)
         picks = filter_picks_by_genre(picks, allowlist, pick_meta,
                                       strict=strict_genre,
                                       exclude=exclude_genres,
+                                      require_tags=require_tags,
+                                      forbid_tags=forbid_tags,
                                       limit=limit)
         log.info("LB-Radio genre filter: kept %d of %d picks",
                  len(picks), before)
@@ -536,6 +567,8 @@ def lb_radio_from_genres(canonical_tags: list[str],
                          max_prompt_tags: int = 8,
                          strict_genre: bool = False,
                          exclude_genres: set[str] | None = None,
+                         require_tags: set[str] | None = None,
+                         forbid_tags: set[str] | None = None,
                          owned_mbids: set[str] | None = None,
                          owned_titles: set[str] | None = None,
                          ) -> tuple[str, list[Pick]]:
@@ -576,12 +609,15 @@ def lb_radio_from_genres(canonical_tags: list[str],
         log.info("LB-Radio owned filter: kept %d of %d picks",
                  len(picks), before)
 
-    if (allowlist_variants or exclude_genres is not None) and picks:
+    if (allowlist_variants or exclude_genres is not None
+            or require_tags or forbid_tags) and picks:
         pick_meta = metadata_recording([p.mbid for p in picks])
         before = len(picks)
         picks = filter_picks_by_genre(picks, allowlist_variants, pick_meta,
                                       strict=strict_genre,
                                       exclude=exclude_genres,
+                                      require_tags=require_tags,
+                                      forbid_tags=forbid_tags,
                                       limit=limit)
         log.info("LB-Radio genre filter: kept %d of %d picks",
                  len(picks), before)

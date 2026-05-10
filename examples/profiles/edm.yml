@@ -1,0 +1,78 @@
+# Example: EDM profile (current default behavior, made explicit).
+#
+# Drop a copy at ~/.config/hifi/profiles/edm.yml then run:
+#   hifi recommend --profile edm
+#
+# Mirrors what `hifi recommend` does today with no profile loaded —
+# useful as a starting point if you want to tweak the EDM defaults
+# without reading source.
+
+seed-sample: 20
+seed-genres:
+  - future bass
+limit: 30
+genre-top-n: 15
+genre-min-count: 5
+lb-radio-mode: medium
+confirm: true
+
+# Same set as src/hifi/recommender.py:_DEFAULT_EXCLUDE_GENRES.
+# Listed explicitly so you can see what gets dropped.
+exclude-genres:
+  - pop
+  - dance-pop
+  - dance pop
+  - electropop
+  - electro-pop
+  - synthpop
+  - synth-pop
+  - synth pop
+  - alt-pop
+  - alt pop
+  - alternative pop
+  - indie pop
+  - art pop
+  - pop rock
+  - pop-rock
+  - k-pop
+  - j-pop
+  - kpop
+  - jpop
+  - hip hop
+  - hip-hop
+  - hiphop
+  - rap
+  - pop rap
+  - boom bap
+  - conscious hip hop
+  - trap rap
+  - trap metal
+  - horrorcore
+  - alternative hip hop
+  - contemporary rap
+  - rock
+  - punk
+  - punk rock
+  - metal
+  - alternative rock
+  - alternative
+  - indie rock
+  - indie
+  - country
+  - folk
+  - classical
+  - blues
+  - jazz
+  - soul
+  - r&b
+  - rnb
+  - contemporary r&b
+  - alternative r&b
+  - reggae
+  - ska
+  - latin
+  - christmas
+  - holiday
+  - gospel
+  - christian
+  - worship

@@ -1,0 +1,57 @@
+# Example: solo-piano-leaning profile.
+#
+# Drop a copy at ~/.config/hifi/profiles/piano.yml then run:
+#   hifi recommend --profile piano
+#
+# Designed for modern-classical / "nightmare" virtuoso piano covers
+# (Yiruma, Olafur Arnalds, Nils Frahm, Ludovico Einaudi, Max Richter,
+# DaGamba, Toms Mucenieks, etc.).
+#
+# Why not seed-genre: "solo piano"?
+# LB Labs tag-similarity is too thin on it (452 max hits, then sparse;
+# `piano cover` returns 6 — useless). `neoclassical` (1440 hits) and
+# `modern classical` (760) are the well-populated seeds and are how
+# LB / MB classify the music we want.
+#
+# The require-tags list is the moderate-strictness filter: a pick
+# must carry at least one of these MB tags to survive. Some band-
+# instrumented neoclassical may slip through (we can't programmatically
+# detect "no drums credited" — MB doesn't expose performer:instrument
+# at the recording level via the API), but the topic signal is strong.
+
+seed-file: /mnt/intranet/Music/Piano.m3u8
+seed-sample: 20
+seed-genres:
+  - neoclassical
+  - modern classical
+  - contemporary classical
+output: /mnt/intranet/Music/Recommended/Piano
+limit: 30
+confirm: true
+
+# Replaces the EDM-default denylist. Allows classical / neoclassical /
+# soundtrack / cinematic; excludes the obvious off-genre families.
+exclude-genres:
+  - pop
+  - rock
+  - alternative rock
+  - indie rock
+  - punk
+  - metal
+  - hip hop
+  - rap
+  - dance
+  - electronic
+  - edm
+
+# Pick must carry at least one of these tags. Tuned to the Yiruma /
+# Einaudi / Olafur Arnalds neighborhood as classified in MB.
+require-tags:
+  - piano
+  - pianist
+  - neoclassical
+  - modern classical
+  - contemporary classical
+  - solo piano
+  - classical
+  - cinematic

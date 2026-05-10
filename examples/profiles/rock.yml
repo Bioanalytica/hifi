@@ -1,0 +1,25 @@
+# Example: rock-friendly profile.
+#
+# Drop a copy at ~/.config/hifi/profiles/rock.yml then run:
+#   hifi recommend --profile rock
+#
+# The exclude-genres list intentionally OMITS rock / alternative rock /
+# indie rock / punk / metal so those tagged picks are allowed through.
+# Replaces (does not extend) the default EDM denylist when present.
+
+seed-file: /mnt/intranet/Music/Rock OTG.m3u8
+seed-sample: 30
+output: /mnt/intranet/Music/Recommended/Rock
+limit: 30
+confirm: true
+
+exclude-genres:
+  - dance-pop
+  - electropop
+  - country
+  - rap
+  - hip hop
+  - dance
+  - christian
+  - holiday
+  - children's

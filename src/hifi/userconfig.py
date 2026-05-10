@@ -54,6 +54,11 @@ def state_path() -> str:
     return os.path.join(_config_dir(), "state.json")
 
 
+def profiles_dir() -> str:
+    """Directory where named profile YAMLs live (``<name>.yml``)."""
+    return os.path.join(_config_dir(), "profiles")
+
+
 def load() -> dict:
     """Read and parse the config file. Returns ``{}`` when absent."""
     path = config_path()
@@ -71,6 +76,37 @@ def load() -> dict:
         log.warning("failed to parse %s: %s", path, e)
         return {}
     return data or {}
+
+
+def load_profile(name: str) -> dict:
+    """Read a named profile YAML from ``<profiles_dir>/<name>.yml``.
+
+    Returns ``{}`` when the file is missing, malformed, or pyyaml is
+    not installed. Same loose-failure semantics as :func:`load`. The
+    returned dict is shaped like the ``recommend:`` section of the main
+    config and gets merged on top of it; any keys not understood by
+    argparse defaults are simply ignored.
+    """
+    if not name:
+        return {}
+    path = os.path.join(profiles_dir(), f"{name}.yml")
+    if not os.path.exists(path):
+        return {}
+    try:
+        import yaml
+    except ImportError:
+        log.warning("pyyaml not installed; ignoring %s", path)
+        return {}
+    try:
+        with open(path) as f:
+            data = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError) as e:
+        log.warning("failed to parse %s: %s", path, e)
+        return {}
+    if not isinstance(data, dict):
+        log.warning("profile %s is not a mapping; ignoring", path)
+        return {}
+    return data
 
 
 def section(name: str) -> dict:

@@ -17,6 +17,21 @@ from hifi.tagger import search_musicbrainz, tag_file
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 
+def _extract_profile_name(argv: list[str]) -> str | None:
+    """Pull ``--profile NAME`` (or ``--profile=NAME``) out of argv.
+
+    Done as a pre-pass so the named profile can supply argparse
+    defaults for every flag — argparse can't do that itself because it
+    parses one pass over argv.
+    """
+    for i, a in enumerate(argv):
+        if a == "--profile" and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith("--profile="):
+            return a.split("=", 1)[1]
+    return None
+
+
 def _parse_search_query(query: str) -> tuple[str, str]:
     """Split 'Artist - Title' for search input.
 
@@ -318,11 +333,22 @@ def run_pipeline(args: argparse.Namespace):
 
 def parse_recommend_args(argv: list[str]) -> argparse.Namespace:
     from hifi import userconfig
-    cfg = userconfig.section("recommend")
+    cfg = dict(userconfig.section("recommend"))
+
+    profile_name = _extract_profile_name(argv)
+    if profile_name:
+        profile = userconfig.load_profile(profile_name)
+        # Profile keys win over the base recommend section. CLI flags
+        # still win over both because argparse parses argv last.
+        cfg.update(profile)
 
     parser = argparse.ArgumentParser(
         prog="hifi recommend",
         description="Generate a similar-tracks playlist from seed songs.",
+    )
+    parser.add_argument(
+        "--profile", metavar="NAME", default=profile_name,
+        help="Load defaults from ~/.config/hifi/profiles/<NAME>.yml",
     )
     # Repeatable flags use config as base; CLI invocations extend it
     # (so a user with `owned-dirs:` in config still gets to add ad-hoc
@@ -394,6 +420,21 @@ def parse_recommend_args(argv: list[str]) -> argparse.Namespace:
         help="Hard-reject picks tagged with TAG even if they match the "
              "allowlist (repeatable). Adds to the built-in defaults: "
              "pop, country, classical, jazz, blues, christmas, etc.",
+    )
+    parser.add_argument(
+        "--require-tag", action="append",
+        default=list(cfg.get("require-tags", []) or []), metavar="TAG",
+        help="Pick must have at least one of these tags (repeatable). "
+             "Used by profiles to demand a topic signal — e.g. the "
+             "piano profile requires at least one of {piano, pianist, "
+             "neoclassical, modern classical, ...}.",
+    )
+    parser.add_argument(
+        "--forbid-tag", action="append",
+        default=list(cfg.get("forbid-tags", []) or []), metavar="TAG",
+        help="Pick must have NONE of these tags (repeatable). Stricter "
+             "than --exclude-genre; intended for profile-supplied "
+             "instrument or non-genre signals.",
     )
     parser.add_argument(
         "--owned-dir", action="append",
@@ -482,9 +523,19 @@ def run_recommend(args: argparse.Namespace):
             owned_mbids, owned_titles = collect_owned(args.owned_dir)
             print(f"  owned: {len(owned_mbids)} MBIDs, {len(owned_titles)} titles")
 
-        exclude_genres = set(_DEFAULT_EXCLUDE_GENRES)
-        for g in args.exclude_genre:
-            exclude_genres.add(g.strip().lower())
+        # If the user (via CLI or profile/config) supplied any exclude
+        # genres at all, treat that list as the full exclude set so a
+        # rock profile that omits "rock" actually lets rock through.
+        # Otherwise fall back to the EDM-default denylist.
+        if args.exclude_genre:
+            exclude_genres = {g.strip().lower() for g in args.exclude_genre}
+        else:
+            exclude_genres = set(_DEFAULT_EXCLUDE_GENRES)
+
+        require_tags = {t.strip().lower() for t in (args.require_tag or [])
+                        if t and t.strip()}
+        forbid_tags = {t.strip().lower() for t in (args.forbid_tag or [])
+                       if t and t.strip()}
 
         expanded: set[str] = set()
         canonical: list[str] = []
@@ -521,6 +572,8 @@ def run_recommend(args: argparse.Namespace):
                 mode=args.lb_radio_mode, limit=args.limit,
                 strict_genre=args.strict_genre,
                 exclude_genres=exclude_genres,
+                require_tags=require_tags or None,
+                forbid_tags=forbid_tags or None,
                 owned_mbids=owned_mbids,
                 owned_titles=owned_titles,
             )
@@ -540,6 +593,8 @@ def run_recommend(args: argparse.Namespace):
                 filter_genre=not args.no_genre_filter,
                 strict_genre=args.strict_genre,
                 exclude_genres=exclude_genres,
+                require_tags=require_tags or None,
+                forbid_tags=forbid_tags or None,
                 owned_mbids=owned_mbids,
                 owned_titles=owned_titles,
             )
@@ -577,6 +632,8 @@ def run_recommend(args: argparse.Namespace):
                 filter_genre=not args.no_genre_filter,
                 strict_genre=args.strict_genre,
                 exclude_genres=exclude_genres,
+                require_tags=require_tags or None,
+                forbid_tags=forbid_tags or None,
                 owned_mbids=owned_mbids or None,
                 owned_titles=owned_titles or None,
             )
@@ -632,11 +689,19 @@ def run_recommend(args: argparse.Namespace):
 
 def parse_tags_args(argv: list[str]) -> argparse.Namespace:
     from hifi import userconfig
-    cfg = userconfig.section("recommend")  # reuses recommend's seed config
+    cfg = dict(userconfig.section("recommend"))  # reuses recommend's seed config
+
+    profile_name = _extract_profile_name(argv)
+    if profile_name:
+        cfg.update(userconfig.load_profile(profile_name))
 
     parser = argparse.ArgumentParser(
         prog="hifi tags",
         description="Print the MB tags associated with seed songs.",
+    )
+    parser.add_argument(
+        "--profile", metavar="NAME", default=profile_name,
+        help="Load defaults from ~/.config/hifi/profiles/<NAME>.yml",
     )
     parser.add_argument(
         "--seed", action="append", default=list(cfg.get("seeds", []) or []),
