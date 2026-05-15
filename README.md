@@ -246,7 +246,30 @@ hifi --retry            # retry all failed downloads
 hifi --dry-run <url>    # see what would happen without downloading
 hifi lb-status          # validate the configured LB token, cache username
 hifi tags --seed-file ~/x.m3u  # show MB tags for the songs in a playlist
+hifi retag <dir>        # rewrite album + cover art on existing files
 ```
+
+### `hifi retag`
+
+Re-tag album and cover art on existing audio files using the canonical MusicBrainz album for each track. Looks up each file by its existing artist + title, walks the top 30 MB recording matches, and picks the release that's most likely to be the original studio album (Tier 1: `Official` + primary-type `Album` + no `Compilation`/`Live`/`Demo`/`Soundtrack`/`Mixtape` secondary type, then earliest by date). The walker is what catches the common failure mode where MB ranks a live-performance recording at index 0 (with only bootleg releases) above the actual studio recording.
+
+```sh
+# Dry-run a directory — shows old vs new album per file, writes nothing.
+hifi retag --dry-run /mnt/intranet/Music/Recommended/Rock/
+
+# Real run.
+hifi retag /mnt/intranet/Music/Recommended/Rock/
+
+# One file.
+hifi retag --dry-run /path/to/song.flac
+
+# Force re-tag even if current album already matches MB's pick.
+hifi retag --force /mnt/intranet/Music/Recommended/Piano/
+```
+
+The existing artist/title tags are the lookup keys and are never modified. Album, year, and cover art get overwritten. Cover art is fetched from Cover Art Archive — release-group endpoint first (stable across regional editions and remasters), with the specific release as fallback. FLAC and MP3 writers clear existing pictures before adding the new one so files don't end up with two embedded covers.
+
+Limitations: very famous tracks (Metallica "Enter Sandman", Toto "Africa") sometimes have so many MB recording rows for live performances that the studio recording is past index 30 and the retagger falls through to a softer tier. Future-fix candidate: bump search depth, or add an artist+album second pass.
 
 ### `hifi tags`
 
@@ -388,7 +411,7 @@ Each download is logged in `hifi.db` with cleaned URL, format, status, MBID, and
 ## Development
 
 ```sh
-uv run pytest               # 137 tests
+uv run pytest               # 145 tests
 uv run pytest -x -k searcher
 uv run pytest -x -k genre   # genre filter + genre-graph unit tests
 uv run pytest -x -k listenbrainz   # LB API client tests

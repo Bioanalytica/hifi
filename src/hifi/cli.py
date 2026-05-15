@@ -5,6 +5,7 @@ import sys
 
 from hifi import __version__
 from hifi.config import (
+    AUDIO_EXTENSIONS,
     DEFAULT_FORMAT, DEFAULT_OUTPUT_DIR, DB_PATH,
     RECOMMEND_LIMIT_DEFAULT, SEED_SAMPLE_DEFAULT,
 )
@@ -819,6 +820,128 @@ def run_lb_status():
     print(f"  cached at {userconfig.state_path()}")
 
 
+def parse_retag_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="hifi retag",
+        description="Re-tag album + cover art on existing audio files "
+                    "using a canonical MusicBrainz album lookup.",
+    )
+    parser.add_argument(
+        "paths", nargs="+",
+        help="Audio files or directories to retag (walks dirs recursively).",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would change without writing tags.",
+    )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Re-tag even when the current album already matches MB's pick.",
+    )
+    return parser.parse_args(argv)
+
+
+def run_retag(args: argparse.Namespace):
+    """Walk ``paths``, MB-look-up each file by artist+title, and overwrite
+    album + year + cover with the canonical-album pick from
+    :func:`hifi.tagger.pick_canonical_release`.
+
+    Existing artist/title tags are the lookup keys and are never modified.
+    Files without an artist+title in their tags, or where MB can't return
+    a confident hit, are skipped silently. Use --dry-run first to eyeball.
+    """
+    from mutagen import File as MutagenFile
+    from hifi.tagger import embed_tags, fetch_cover_art, search_musicbrainz
+
+    files: list[str] = []
+    for p in args.paths:
+        if os.path.isfile(p):
+            if p.lower().endswith(AUDIO_EXTENSIONS):
+                files.append(p)
+            else:
+                print(f"  skip (not an audio file): {p}")
+        elif os.path.isdir(p):
+            for root, _, names in os.walk(p):
+                for n in names:
+                    if n.lower().endswith(AUDIO_EXTENSIONS):
+                        files.append(os.path.join(root, n))
+        else:
+            print(f"  skip (does not exist): {p}")
+
+    if not files:
+        print("  no audio files found")
+        return
+
+    print(f"  found {len(files)} audio files")
+    updated = 0
+    skipped = 0
+    failed = 0
+
+    for i, path in enumerate(files, 1):
+        rel = os.path.relpath(path)
+        try:
+            f = MutagenFile(path, easy=True)
+            if f is None:
+                raise ValueError("mutagen returned None")
+            artist = (f.get("artist") or [None])[0]
+            title = (f.get("title") or [None])[0]
+            old_album = (f.get("album") or [""])[0]
+        except Exception as e:
+            print(f"  [{i}/{len(files)}] read FAILED: {rel}: {e}")
+            failed += 1
+            continue
+
+        if not artist or not title:
+            print(f"  [{i}/{len(files)}] skip (no artist/title): {rel}")
+            skipped += 1
+            continue
+
+        mb_data = search_musicbrainz(artist, title)
+        if not mb_data:
+            print(f"  [{i}/{len(files)}] skip (no MB match): {artist} - {title}")
+            skipped += 1
+            continue
+
+        new_album = mb_data.get("album")
+        if not new_album:
+            print(f"  [{i}/{len(files)}] skip (no album in MB): {artist} - {title}")
+            skipped += 1
+            continue
+
+        if not args.force and old_album.strip().lower() == new_album.strip().lower():
+            print(f"  [{i}/{len(files)}] ok: {artist} - {title} [{old_album}]")
+            skipped += 1
+            continue
+
+        if args.dry_run:
+            print(f"  [{i}/{len(files)}] [dry] {artist} - {title}")
+            print(f"      [{old_album or '(none)'}] -> [{new_album}]")
+            updated += 1
+            continue
+
+        cover = fetch_cover_art(
+            mb_data.get("release_id"),
+            mb_data.get("release_group_id"),
+        )
+        try:
+            embed_tags(
+                path, title=title, artist=artist,
+                album=new_album, year=mb_data.get("year"),
+                cover_data=cover,
+            )
+        except Exception as e:
+            print(f"  [{i}/{len(files)}] write FAILED: {rel}: {e}")
+            failed += 1
+            continue
+
+        print(f"  [{i}/{len(files)}] tagged: {artist} - {title}")
+        print(f"      [{old_album or '(none)'}] -> [{new_album}]")
+        updated += 1
+
+    print(f"\n  done: {updated} {'would update' if args.dry_run else 'updated'}, "
+          f"{skipped} skipped, {failed} failed")
+
+
 def main():
     argv = sys.argv[1:]
     if argv and argv[0] == "recommend":
@@ -831,6 +954,10 @@ def main():
     if argv and argv[0] == "tags":
         args = parse_tags_args(argv[1:])
         run_tags(args)
+        return
+    if argv and argv[0] == "retag":
+        args = parse_retag_args(argv[1:])
+        run_retag(args)
         return
     args = parse_args()
     run_pipeline(args)
